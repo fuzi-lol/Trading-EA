@@ -1,0 +1,13 @@
+SMC_V7: RR 2.0, Tight SMC Filters
+Result: $316 profit | 9.05% DD | 61.95% WR | PF 1.11 | Sharpe 3.59 | 113 trades
+
+Parameters:
+- FastEMA=9, SlowEMA=21, EMA_TF=M15
+- RSI=14, BuyLvl=48, SellLvl=52, OB=75, OS=25
+- ATR=14, ATR_SL_Multi=1.5, RR=2.0
+- MinSL=200, MaxSL=1000
+- BE@0.8R lock=30pts, Trail@1.5R step=80pts
+- FVG: Lookback=20, MinWidth=40pts, MaxDist=1.5 ATR
+- OB: Lookback=25, DispMulti=2.0, MaxDist=1.5 ATR
+- London=11-13, NY=15-21, SkipTuesday=true
+- MaxTrades=2/day, Cooldown=6 bars, MaxSpread=50

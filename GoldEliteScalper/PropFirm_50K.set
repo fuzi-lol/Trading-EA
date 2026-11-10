@@ -1,0 +1,88 @@
+; GoldEliteScalper - Prop Firm $50K Gold Settings (Tuned V3)
+; Daily DD: 3% (guard at 2.5%), Overall DD: 12% (guard at 10%)
+; No leverage, XAUUSD, M1 chart
+; Profitable hours: 12, 15, 18 | Skip: 11, 16, 17
+
+; Kill Zone Times
+LDN_Start=12
+LDN_End=13
+NY_Start=15
+NY_End=20
+UseLDN=true
+UseNY=true
+SkipTuesday=true
+SkipHours=16,17
+SkipThursday=true
+SkipFriday=true
+
+; EMA Trend Filter
+FastEMA_Period=9
+SlowEMA_Period=21
+TrendEMA_M5=21
+TrendEMA_M15=50
+
+; VWAP
+UseVWAP=true
+VWAP_BandPts=60
+
+; CVD
+UseCVD=true
+CVD_Period=14
+CVD_Smooth=5
+
+; S/R & Liquidity Sweep
+SR_SwingBars=5
+SR_MaxLevels=8
+SR_MergePts=300
+SweepMinPts=15
+SweepMaxPts=250
+SweepValidBars=3
+
+; FVG
+FVG_Lookback=20
+FVG_MinWidth_Pts=30
+FVG_MaxDist_ATR=1.5
+
+; Order Block
+OB_Lookback=20
+OB_Disp_Multi=1.5
+OB_MaxDist_ATR=1.5
+
+; BOS / CHoCH
+Structure_Lookback=30
+BOS_MinPts=50
+
+; Price Action
+Engulf_MinRatio=1.3
+PinBar_WickRatio=2.0
+PinBar_MinWickPts=30
+
+; ATR & Risk
+ATR_Period=14
+SL_ATR_Multi=1.5
+MinSL_Points=150
+MaxSL_Points=600
+RiskReward=2.0
+UseNextSR_TP=true
+
+; Breakeven & Trailing
+BE_Trigger_RR=1.0
+BE_Lock_Points=20
+Trail_Trigger_RR=1.5
+Trail_Step_Pts=100
+
+; Confluence
+MinConfluence=4
+
+; Prop Firm Safety
+RiskPercent=0.75
+DailyLossLimit=2.5
+MaxDrawdownPct=10.0
+UseEquityGuard=true
+CloseAtSessionEnd=true
+
+; General
+MaxTradesPerDay=3
+CooldownMins=20
+MaxSpreadPts=40
+MagicNumber=999500

@@ -1,0 +1,13 @@
+SMC_V8: Conservative -- OVER-FILTERED (LOSING)
+Result: -$431 loss | 11.65% DD | 56.25% WR | PF 0.77 | Sharpe -5.0 | 64 trades
+
+Parameters:
+- FastEMA=9, SlowEMA=21, EMA_TF=M15
+- RSI=14, BuyLvl=50, SellLvl=50, OB=75, OS=25
+- ATR=14, ATR_SL_Multi=1.2, RR=2.0
+- MinSL=250, MaxSL=800
+- BE@0.7R lock=30pts, Trail@1.3R step=80pts
+- FVG: Lookback=20, MinWidth=40pts, MaxDist=1.5 ATR
+- OB: Lookback=25, DispMulti=2.0, MaxDist=1.5 ATR
+- London=11-13, NY=16-20, SkipTuesday=true
+- MaxTrades=1/day, Cooldown=8 bars, MaxSpread=40

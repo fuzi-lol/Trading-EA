@@ -1,0 +1,13 @@
+SMC_V3: RR 3.0, ATR 1.5x SL
+Result: $1,165 profit | 16.93% DD | 55.08% WR | PF 1.31 | Sharpe 6.6 | 118 trades
+
+Parameters:
+- FastEMA=9, SlowEMA=21, EMA_TF=M15
+- RSI=14, BuyLvl=45, SellLvl=55, OB=80, OS=20
+- ATR=14, ATR_SL_Multi=1.5, RR=3.0
+- MinSL=200, MaxSL=1200
+- BE@1.0R lock=20pts, Trail@2.0R step=100pts
+- FVG: Lookback=25, MinWidth=30pts, MaxDist=2.0 ATR
+- OB: Lookback=30, DispMulti=1.5, MaxDist=2.0 ATR
+- London=11-13, NY=15-21, SkipTuesday=true
+- MaxTrades=2/day, Cooldown=6 bars, MaxSpread=50

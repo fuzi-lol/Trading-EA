@@ -1,0 +1,1237 @@
+// The Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LyroRS
+
+//@version=6
+indicator("Root Mean Deviation Trail | Lyro RS", "Root Mean Deviation Trail |updated", overlay=true, max_boxes_count = 500, max_labels_count = 500)
+
+import LyroRS/LMAs/1 as DynamicMAs
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Input Groups
+// ─────────────────────────────────────────────────────────────────────────────
+engine_g  = "𝗗𝗘𝗩𝗜𝗔𝗧𝗜𝗢𝗡 𝗘𝗡𝗚𝗜𝗡𝗘"
+band_g    = "𝗕𝗔𝗡𝗗 𝗦𝗘𝗧𝗧𝗜𝗡𝗚𝗦"
+display_g = "𝗗𝗜𝗦𝗣𝗟𝗔𝗬"
+colors_g  = "𝗖𝗢𝗟𝗢𝗥𝗦"
+table_g   = "𝗧𝗔𝗕𝗟𝗘"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Deviation Engine Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+source    = input.source(close, "Source",            group=engine_g, tooltip="Price source for all calculations.")
+maLen     = input.int(13,       "MA Length",         group=engine_g, tooltip="EMA used as the central mean anchor.")
+smoothType = input.string("JMA", "Smoothing MA", options=["SMA", "EMA", "WMA", "VWMA", "DEMA", "TEMA", "RMA", "HMA", "LSMA", "SMMA", "ALMA", "ZLSMA", "FRAMA", "KAMA", "JMA", "T3"], group=engine_g, tooltip="Moving average type applied to smooth the signed deviation signal.")
+smoothLen  = input.int(28,       "Smoothing Length",  group=engine_g, tooltip="Lookback period for the deviation smoothing MA.")
+rmsdLen   = input.int(20,       "RMSD Length",       group=engine_g, tooltip="Lookback for Root Mean Square Deviation — the volatility normalizer.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Band Settings
+// ─────────────────────────────────────────────────────────────────────────────
+multTight = input.float(0.7, "Multiplier Tight (High Deviation)", step=0.1, group=band_g, tooltip="RMSD multiplier when deviation is strong — trail hugs price.")
+multWide  = input.float(2.6, "Multiplier Wide  (Low Deviation)",  step=0.1, group=band_g, tooltip="RMSD multiplier when deviation is weak — trail drifts wide.")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Display Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+colorMode = input.string("Gradient", "Color Mode",
+ options=["Gradient", "Trend"],
+ group=display_g, display=display.none, inline="d1",
+ tooltip="Gradient: color intensity scales with deviation strength. Trend: flat UpC/DnC color.")
+showFill  = input.bool(false, "Band Fill",  group=display_g, display=display.none, inline="d2")
+showOuter = input.bool(true, "Outer Band", group=display_g, display=display.none, inline="d2")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Color Palette — LyroRS Style
+// ─────────────────────────────────────────────────────────────────────────────
+ColMode = input.string("Mystic", "Color Palette",
+ options=["Classic", "Mystic", "Accented", "Royal"],
+ group=colors_g, display=display.none, inline="pal",
+ tooltip="Choose a predefined color scheme.")
+
+cpyn   = input.bool(false,     "Use Custom Palette", tooltip="Enable manual selection of custom colors for trend signals.", group=colors_g, display=display.none)
+cp_UpC = input.color(#00ff00, "Custom Up",   inline="Custom Palette", tooltip="Set a custom color for bullish signals.",  group=colors_g, display=display.none)
+cp_DnC = input.color(#ff0000, "Custom Down", inline="Custom Palette", tooltip="Set a custom color for bearish signals.", group=colors_g, display=display.none)
+
+// Palette resolver
+color UpC = na
+color DnC = na
+
+switch ColMode
+    "Classic"  =>
+        UpC := #00E676
+        DnC := #880E4F
+    "Mystic"   =>
+        UpC := #30FDCF
+        DnC := #E117B7
+    "Accented" =>
+        UpC := #9618F7
+        DnC := #FF0078
+    "Royal"    =>
+        UpC := #FFC107
+        DnC := #673AB7
+
+// ✅ FIX: Variable name case-sensitivity issue fixed
+if cpyn
+    UpC := cp_UpC
+    DnC := cp_DnC
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Table Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+enable_table = input.bool(true,          "",           group=table_g, display=display.none, inline="T")
+pos_table    = input.string("Top Right", "RMDT Table", group=table_g, display=display.none, inline="T",
+ options=["Top Left","Middle Left","Bottom Left","Top Right","Middle Right","Bottom Right","Top Center","Middle Center","Bottom Center"])
+tsize_input  = input.string("Normal",    "",           group=table_g, display=display.none, inline="T",
+ options=["Huge","Large","Normal","Small","Tiny"])
+
+// Table helpers
+pot(pos) =>
+    switch pos
+        "Top Left"      => position.top_left
+        "Middle Left"   => position.middle_left
+        "Bottom Left"   => position.bottom_left
+        "Top Right"     => position.top_right
+        "Middle Right"  => position.middle_right
+        "Bottom Right"  => position.bottom_right
+        "Top Center"    => position.top_center
+        "Middle Center" => position.middle_center
+        "Bottom Center" => position.bottom_center
+
+tsz(s) =>
+    switch s
+        "Huge"   => size.huge
+        "Large"  => size.large
+        "Normal" => size.normal
+        "Small"  => size.small
+        "Tiny"   => size.tiny
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RMSD Function (LyroRS)
+// ─────────────────────────────────────────────────────────────────────────────
+rmsd(src, benchmark, length) =>
+    sum_sq = 0.0
+    for i = 0 to length - 1
+        d = src[i] - benchmark[i]
+        sum_sq += d * d
+    math.sqrt(sum_sq / length)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core Calculations
+// ─────────────────────────────────────────────────────────────────────────────
+ma      = DynamicMAs.EMA(source, maLen)
+rmsdVal = rmsd(source, ma, rmsdLen)
+
+devRaw  = rmsdVal > 0 ? (source - ma) / rmsdVal : 0.0
+float devSig = na
+switch smoothType
+    "SMA"   => devSig := DynamicMAs.SMA(devRaw, smoothLen)
+    "EMA"   => devSig := DynamicMAs.EMA(devRaw, smoothLen)
+    "WMA"   => devSig := DynamicMAs.WMA(devRaw, smoothLen)
+    "VWMA"  => devSig := DynamicMAs.VWMA(devRaw, volume, smoothLen)
+    "DEMA"  => devSig := DynamicMAs.DEMA(devRaw, smoothLen)
+    "TEMA"  => devSig := DynamicMAs.TEMA(devRaw, smoothLen)
+    "RMA"   => devSig := DynamicMAs.RMA(devRaw, smoothLen)
+    "HMA"   => devSig := DynamicMAs.HMA(devRaw, smoothLen)
+    "LSMA"  => devSig := DynamicMAs.LSMA(devRaw, smoothLen, 0)
+    "SMMA"  => devSig := DynamicMAs.SMMA(devRaw, smoothLen)
+    "ALMA"  => devSig := DynamicMAs.ALMA(devRaw, smoothLen, 0, 20)
+    "ZLSMA" => devSig := DynamicMAs.ZLSMA(devRaw, smoothLen)
+    "FRAMA" => devSig := DynamicMAs.FRAMA(devRaw, smoothLen)
+    "KAMA"  => devSig := DynamicMAs.KAMA(devRaw, smoothLen)
+    "JMA"   => devSig := DynamicMAs.JMA(devRaw, smoothLen, 0)
+    "T3"    => devSig := DynamicMAs.T3(devRaw, smoothLen, 0.5)
+sigAbs  = math.abs(devSig)
+sigPeak = ta.highest(sigAbs, 80)
+sigNorm = sigPeak > 0 ? math.min(sigAbs / sigPeak, 1.0) : 0.0
+
+int  trend = devSig > 0 ? 1 : -1
+bool cross = trend != trend[1]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Adaptive Trail
+// ─────────────────────────────────────────────────────────────────────────────
+mult      = multWide - sigNorm * (multWide - multTight)
+bandwidth = rmsdVal * mult
+
+float trail = trend == 1 ? ma - bandwidth : ma + bandwidth
+trail       := DynamicMAs.EMA(trail, 3)
+
+float outer = trend == 1 ? ma + bandwidth * 0.5 : ma - bandwidth * 0.5
+outer       := DynamicMAs.EMA(outer, 3)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Color Mode — Gradient vs Trend
+// ─────────────────────────────────────────────────────────────────────────────
+col = colorMode == "Gradient"
+     ? (trend == 1
+         ? color.from_gradient(sigNorm, 0.05, 0.7, color.new(UpC, 50), UpC)
+         : color.from_gradient(sigNorm, 0.05, 0.7, color.new(DnC, 50), DnC))
+     : (trend == 1 ? UpC : DnC)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Glow (always on)
+// ─────────────────────────────────────────────────────────────────────────────
+glow = rmsdVal * 0.08 * (0.4 + sigNorm * 1.2)
+
+g3p   = plot(ma + glow * 3, display=display.none, editable=false)
+g2p   = plot(ma + glow * 2, display=display.none, editable=false)
+g1p   = plot(ma + glow,     display=display.none, editable=false)
+pMA   = plot(ma, "MA", col, 2)
+g1b   = plot(ma - glow,     display=display.none, editable=false)
+g2b   = plot(ma - glow * 2, display=display.none, editable=false)
+g3b   = plot(ma - glow * 3, display=display.none, editable=false)
+
+fill(g3p, g2p, color.new(col, 94))
+fill(g2p, g1p, color.new(col, 88))
+fill(g1p, pMA,  color.new(col, 78))
+fill(pMA,  g1b, color.new(col, 78))
+fill(g1b, g2b, color.new(col, 88))
+fill(g2b, g3b, color.new(col, 94))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trail & Outer Plot
+// ─────────────────────────────────────────────────────────────────────────────
+float trailBrk = cross ? float(na) : trail
+
+pt  = plot(trailBrk, "Trail", col, 2, plot.style_linebr)
+phl = plot(hl2, display=display.none, editable=false)
+fill(pt, phl, hl2, trailBrk, color(na), color.new(col, showFill ? 70 : 100), editable=false)
+
+plot(showOuter ? DynamicMAs.EMA(outer, 3) : na, "Outer", color.new(col, 78), 1)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Candles & Signals
+// ─────────────────────────────────────────────────────────────────────────────
+plotcandle(open, high, low, close, "Candles", col, col, bordercolor=col)
+
+plotshape(cross and trend == 1,  title="Long Signal",  location=location.belowbar,
+           style=shape.labelup,   text="𝓛𝓸𝓷𝓰",  textcolor=#000000,
+           size=size.small, color=UpC, force_overlay=true)
+
+plotshape(cross and trend == -1, title="Short Signal", location=location.abovebar,
+           style=shape.labeldown, text="𝓢𝓱𝓸𝓻𝓽", textcolor=#000000,
+           size=size.small, color=DnC, force_overlay=true)
+
+barcolor(col)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Strength Number (1-100)
+// ─────────────────────────────────────────────────────────────────────────────
+strengthNum = math.round(sigNorm * 100)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status Table
+// ─────────────────────────────────────────────────────────────────────────────
+var table stat_tbl = table.new(pot(pos_table), 100, 100,
+ frame_width=1, frame_color=color.gray, border_color=color.gray, border_width=1)
+
+trendLbl    = trend == 1 ? "▲  Bullish" : "▼  Bearish"
+trendCol    = trend == 1 ? UpC : DnC
+strengthLbl = sigNorm > 0.75 ? "Strong" : sigNorm > 0.4 ? "Moderate" : "Weak"
+crossLbl    = cross ? "⚡ New Signal" : "—"
+
+if enable_table
+    table.cell(stat_tbl, 0, 0, "RMDT | 𝓛𝔂𝓻𝓸 𝓡𝓢", text_color=color.white, bgcolor=#000000, text_size=tsz(tsize_input))
+    table.cell(stat_tbl, 1, 0, "",                   text_color=color.white, bgcolor=#000000, text_size=tsz(tsize_input))
+    table.merge_cells(stat_tbl, 0, 0, 1, 0)
+
+    table.cell(stat_tbl, 0, 1, "Trend",     text_color=color.gray, bgcolor=#000000, text_size=tsz(tsize_input))
+    table.cell(stat_tbl, 1, 1, trendLbl,    text_color=trendCol,   bgcolor=#000000, text_size=tsz(tsize_input))
+
+    table.cell(stat_tbl, 0, 2, "Strength",  text_color=color.gray, bgcolor=#000000, text_size=tsz(tsize_input))
+    table.cell(stat_tbl, 1, 2, strengthLbl + "  (" + str.tostring(strengthNum) + ")", text_color=trendCol,   bgcolor=#000000, text_size=tsz(tsize_input))
+
+    table.cell(stat_tbl, 0, 3, "Signal",    text_color=color.gray, bgcolor=#000000, text_size=tsz(tsize_input))
+    table.cell(stat_tbl, 1, 3, crossLbl,    text_color=cross ? trendCol : color.gray, bgcolor=#000000, text_size=tsz(tsize_input))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alerts
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(cross and trend == 1  and barstate.isconfirmed, "RMDT Long",  "Root Mean Deviation Trend — Bullish {{ticker}}")
+alertcondition(cross and trend == -1 and barstate.isconfirmed, "RMDT Short", "Root Mean Deviation Trend — Bearish {{ticker}}")
+
+
+// ==============================================================================
+// ███  PART 2: Institutional Order Flow Strength Classifier (LuxAlgo OB Logic Fix)
+// ==============================================================================
+
+color BULL_COLOR = #089981
+color BEAR_COLOR = #f23645
+color TEXT_COLOR = chart.fg_color
+
+string OB_GROUP   = "Order Block Settings"
+int pivotLenInput = input.int(10, "Pivot Lookback", minval = 2, group = OB_GROUP)
+int maxOBsInput   = input.int(10, "Max Unmitigated OBs", minval = 1, maxval = 50, group = OB_GROUP)
+
+string VIS_GROUP   = "Visualization"
+color bullColorInput = input.color(color.new(BULL_COLOR, 80), "Bullish OB Color", group = VIS_GROUP)
+color bearColorInput = input.color(color.new(BEAR_COLOR, 80), "Bearish OB Color", group = VIS_GROUP)
+bool hideOverlappedInput = input.bool(true, "Hide Overlapped Zones", group = VIS_GROUP)
+bool showLabelsInput = input.bool(true, "Show Strength Labels", group = VIS_GROUP)
+bool showStrongestInput = input.bool(true, "Show Strongest OB Plot", group = VIS_GROUP)
+int bufferSizeInput = input.int(20, "Strongest OB Buffer Size", minval = 1, maxval = 100, group = VIS_GROUP)
+
+type OrderBlock
+    float top
+    float bottom
+    int   startTime
+    float strength
+    bool  isBullish
+    box   boxId
+    label labelId
+    bool  mitigated
+
+calculateStrength(float obRange, float breakoutDist, float relVol) =>
+    float dispFactor = math.min(breakoutDist / (obRange * 5), 1.0)
+    float volFactor = math.min(relVol / 2.0, 1.0)
+    float score = (dispFactor * 0.6 + volFactor * 0.4) * 100
+    math.round(score, 1)
+
+var obArray = array.new<OrderBlock>()
+float volSMA = ta.sma(volume, 20)
+
+float hi = ta.pivothigh(pivotLenInput, pivotLenInput)
+float lo = ta.pivotlow(pivotLenInput, pivotLenInput)
+
+var float lastHi = na
+var float lastLo = na
+var int lastHiIdx = na
+var int lastLoIdx = na
+
+if not na(hi)
+    lastHi := hi
+    lastHiIdx := bar_index - pivotLenInput
+if not na(lo)
+    lastLo := lo
+    lastLoIdx := bar_index - pivotLenInput
+
+bool bullBOS = ta.crossover(close, lastHi)
+bool bearBOS = ta.crossunder(close, lastLo)
+
+if bullBOS or bearBOS
+    int searchLen = bar_index - (bullBOS ? lastHiIdx : lastLoIdx)
+    float obTop = na
+    float obBtm = na
+    int obIdx = na
+    float obVol = na
+    
+    if bullBOS
+        // ✅ FIX: BOS पूर्वीची शेवटची (Most Recent) बेअरिश कॅंडल शोधतो
+        int lastBearIdx = na
+        for i = 1 to searchLen
+            if close[i] < open[i]
+                lastBearIdx := i
+                break 
+        if not na(lastBearIdx)
+            obTop := high[lastBearIdx]
+            obBtm := low[lastBearIdx]
+            obIdx := lastBearIdx
+            obVol := volume[lastBearIdx]
+        lastHi := na 
+    else
+        // ✅ FIX: BOS पूर्वीची शेवटची (Most Recent) बुलिश कॅंडल शोधतो
+        int lastBullIdx = na
+        for i = 1 to searchLen
+            if close[i] > open[i]
+                lastBullIdx := i
+                break
+        if not na(lastBullIdx)
+            obTop := high[lastBullIdx]
+            obBtm := low[lastBullIdx]
+            obIdx := lastBullIdx
+            obVol := volume[lastBullIdx]
+        lastLo := na
+        
+    if not na(obIdx)
+        float obHeight = obTop - obBtm
+        float breakoutDist = bullBOS ? (close - obTop) : (obBtm - close)
+        float avgVol = volSMA[obIdx]
+        float strength = calculateStrength(obHeight, breakoutDist, obVol / avgVol)
+        
+        OrderBlock newOB = OrderBlock.new(obTop, obBtm, time[obIdx], strength, bullBOS, na, na, false)
+        array.unshift(obArray, newOB)
+
+if array.size(obArray) > 0
+    for i = 0 to array.size(obArray) - 1
+        OrderBlock ob = array.get(obArray, i)
+        if not ob.mitigated
+            bool isMitigated = ob.isBullish ? low < ob.bottom : high > ob.top
+            if isMitigated
+                ob.mitigated := true
+
+float strongestTop = na
+float strongestBottom = na
+float strongestAvgPrice = na
+bool  strongestIsBullish = false
+float maxStrength = -1.0
+
+if array.size(obArray) > 0
+    int checkedCount = 0
+    for i = 0 to array.size(obArray) - 1
+        OrderBlock ob = array.get(obArray, i)
+        if not ob.mitigated
+            if ob.strength > maxStrength
+                maxStrength := ob.strength
+                strongestTop := ob.top
+                strongestBottom := ob.bottom
+                strongestAvgPrice := (ob.top + ob.bottom) / 2
+                strongestIsBullish := ob.isBullish
+            
+            checkedCount += 1
+            if checkedCount >= bufferSizeInput
+                break
+
+color plotCol = na(strongestAvgPrice) ? na : (strongestIsBullish ? bullColorInput : bearColorInput)
+bool  hasChanged = strongestAvgPrice != strongestAvgPrice[1]
+
+plotTop = plot(showStrongestInput ? strongestTop : na, "Strongest OB Top", color = hasChanged ? na : color.new(plotCol, 70))
+plotBtm = plot(showStrongestInput ? strongestBottom : na, "Strongest OB Bottom", color = hasChanged ? na : color.new(plotCol, 70))
+fill(plotTop, plotBtm, hasChanged ? na : color.new(plotCol, 90), "Strongest OB Zone Fill")
+
+plot(showStrongestInput ? strongestAvgPrice : na, "Strongest OB Median", color = hasChanged ? na : color.new(plotCol, 40), linewidth = 2)
+
+if barstate.islast
+    int activeCount = 0
+    var occupiedTops = array.new_float(0)
+    var occupiedBtms = array.new_float(0)
+    array.clear(occupiedTops)
+    array.clear(occupiedBtms)
+    
+    if array.size(obArray) > 0
+        for i = 0 to array.size(obArray) - 1
+            OrderBlock ob = array.get(obArray, i)
+            
+            bool isOverlapped = false
+            if not ob.mitigated and hideOverlappedInput and array.size(occupiedTops) > 0
+                for j = 0 to array.size(occupiedTops) - 1
+                    float otherTop = array.get(occupiedTops, j)
+                    float otherBtm = array.get(occupiedBtms, j)
+                    if (ob.top <= otherTop and ob.top >= otherBtm) or (ob.bottom <= otherTop and ob.bottom >= otherBtm) or (ob.top >= otherTop and ob.bottom <= otherBtm)
+                        isOverlapped := true
+                        break
+
+            if not ob.mitigated and not isOverlapped and activeCount < maxOBsInput
+                activeCount += 1
+                array.push(occupiedTops, ob.top)
+                array.push(occupiedBtms, ob.bottom)
+                
+                color obCol = ob.isBullish ? bullColorInput : bearColorInput
+                color labelCol = ob.isBullish ? BULL_COLOR : BEAR_COLOR
+
+                if na(ob.boxId)
+                    ob.boxId := box.new(ob.startTime, ob.top, time, ob.bottom, bgcolor = obCol, border_color = obCol, border_style = line.style_dashed, xloc = xloc.bar_time)
+                
+                if showLabelsInput
+                    if na(ob.labelId)
+                        ob.labelId := label.new(time, (ob.top + ob.bottom) / 2, text = str.format("{0}%", ob.strength), style = label.style_label_left, textcolor = labelCol, color = #00000000, size = size.huge, textalign = text.align_center, xloc = xloc.bar_time)
+            else
+                if not na(ob.boxId)
+                    box.delete(ob.boxId)
+                    ob.boxId := na
+                if not na(ob.labelId)
+                    label.delete(ob.labelId)
+                    ob.labelId := na
+
+if array.size(obArray) > 100
+    for i = array.size(obArray) - 1 to 0
+        OrderBlock ob = array.get(obArray, i)
+        if ob.mitigated and array.size(obArray) > 50
+            array.remove(obArray, i)
+        else if array.size(obArray) > 100
+            array.pop(obArray)
+
+
+// ==============================================================================
+// ███  PART 3: MTF OB + FVG PRO (Fixed & Completed)
+// ==============================================================================
+
+getBarTime(t_, barsOffset_) =>
+    t_ + barsOffset_ * timeframe.in_seconds(timeframe.period) * 1000
+
+BarsBack(val_, hl_) =>
+    back_ = time
+    for i = 0 to 4999
+        if val_ == hl_[i]
+            back_ := time[i]
+            break
+    back_
+
+VolumePower(v_, c_, l_, h_, ca_) =>
+    r_ = h_ - l_
+    r_ == 0 ? 50 : ca_ ?
+     math.round(math.round(v_ * (c_ - l_) / r_) / v_ * 100) :
+     math.round(math.round(v_ * (h_ - c_) / r_) / v_ * 100)
+
+getScoreGrade(score_) =>
+    score_ >= 75 ? 'STRONG' : score_ >= 50 ? 'MODERATE' : 'WEAK'
+
+getScoreColor(score_) =>
+    score_ >= 75 ? color.new(#00ffbb, 0) : score_ >= 50 ? color.new(#f5a623, 0) : color.new(#ff1100, 0)
+
+getConfScore(gapSize_, avgWick_, buyVol_, sellVol_) =>
+    sizeScore_ = math.min(gapSize_ / math.max(avgWick_, 0.0001) * 50, 50)
+    volScore_  = math.min(math.abs(buyVol_ - sellVol_) / 2, 50)
+    int(sizeScore_ + volScore_)
+
+ob_tf          = input.timeframe('',    'Timeframe',                    group = '⚙️ OB: Core Settings',  inline = 'obtf')
+ob_prd         = input.int(3,           'Lookback',     minval = 0,     group = '⚙️ OB: Core Settings',  inline = 'obtf')
+ob_sen         = input.bool(true,       'Enhanced Candle Sensitivity',  group = '⚙️ OB: Core Settings')
+ob_perc        = input.float(0.0,       'Min % Move',   step  = 0.1,    group = '⚙️ OB: Core Settings')
+ob_mit         = input.bool(true,       'Mitigate on Midpoint',         group = '🎯 OB: Mitigation')
+ob_keepHistory = input.bool(false,      'Keep Mitigated OBs (faded)',   group = '🎯 OB: Mitigation')
+ob_extLen      = input.int(25,          'Extend Boxes (bars)', minval=1, group = '🎨 OB: Style')
+ob_UpCol       = input.color(color.new(#f7f8f8, 31), 'Bull OB',        group = '🎨 OB: Style', inline = 'obcol')
+ob_DnCol       = input.color(color.new(#0077ff, 50), 'Bear OB',        group = '🎨 OB: Style', inline = 'obcol')
+ob_Col         = input.color(color.new(color.gray, 85), 'Base',        group = '🎨 OB: Style', inline = 'obcol')
+ob_MitCol      = input.color(color.new(color.gray, 92), 'Mitigated',   group = '🎨 OB: Style', inline = 'obcol')
+
+type OBData
+    array<box>   ob
+    array<box>   bvBox
+    array<box>   svBox
+    array<line>  midLine
+    array<label> lbl
+    array<label> scoreLbl
+    array<int>   birthBar
+    array<float> obTop
+    array<float> obBot
+    array<bool>  mitigated
+
+var obBullData = OBData.new(
+ array.new<box>(), array.new<box>(), array.new<box>(), array.new<line>(),
+ array.new<label>(), array.new<label>(), array.new<int>(),
+ array.new<float>(), array.new<float>(), array.new<bool>())
+
+var obBearData = OBData.new(
+ array.new<box>(), array.new<box>(), array.new<box>(), array.new<line>(),
+ array.new<label>(), array.new<label>(), array.new<int>(),
+ array.new<float>(), array.new<float>(), array.new<bool>())
+
+var ob_save    = array.new_float(0)
+var ob_TLine   = 0.0
+
+var array<int> ob_totalBull  = array.from(0)
+var array<int> ob_totalBear  = array.from(0)
+var array<int> ob_filledBull = array.from(0)
+var array<int> ob_filledBear = array.from(0)
+
+getOBFill(top_, bot_, isBull_) =>
+    obSize_ = top_ - bot_
+    result_ = 0
+    if obSize_ <= 0
+        result_ := 100
+    else if isBull_
+        filled_ = math.max(0.0, top_ - math.max(low, bot_))
+        result_ := math.min(int(math.round(filled_ / obSize_ * 100)), 100)
+    else
+        filled_ = math.max(0.0, math.min(high, top_) - bot_)
+        result_ := math.min(int(math.round(filled_ / obSize_ * 100)), 100)
+    result_
+
+// ✅ FIX: close[1] ची डुप्लिकेट एंट्री काढून टाकली आहे
+ob_getMTF() =>
+    [close[2], close[1], high[1], low[1], volume]
+
+ob_getCandle() =>
+    bull_ = close > ta.highest(high[1], math.max(ob_prd, 1))
+    bear_ = close < ta.lowest(low[1],   math.max(ob_prd, 1))
+    if ob_sen
+        bull_ := close > ta.highest(high[1], math.max(ob_prd, 1)) and close > open
+        bear_ := close < ta.lowest(low[1],   math.max(ob_prd, 1)) and close < open
+    wick_ = math.max(close, open) - math.min(close, open)
+    array.push(ob_save, wick_)
+    if ob_save.size() > 100
+        ob_save.shift()
+    [bull_, bear_, wick_, array.avg(ob_save)]
+
+isOBOverlap(newTop_, newBot_, existTop_, existBot_) =>
+    newTop_ >= existBot_ and newBot_ <= existTop_
+
+method OBMergeBull(OBData d, newTop_, newBot_, HBack_, buyVol_, sellVol_, avgWick_) =>
+    merged_ = false
+    if d.ob.size() > 0 and not d.mitigated.get(0)
+        existTop_ = d.obTop.get(0)
+        existBot_ = d.obBot.get(0)
+        if isOBOverlap(newTop_, newBot_, existTop_, existBot_)
+            mergedTop_ = math.max(existTop_, newTop_)
+            mergedBot_ = math.min(existBot_, newBot_)
+            midVal_    = math.avg(mergedTop_, mergedBot_)
+            future_    = getBarTime(HBack_, ob_extLen)
+            dist_      = future_ - HBack_
+            score_     = getConfScore(mergedTop_ - mergedBot_, avgWick_, buyVol_, sellVol_)
+            scoreTxt_  = str.tostring(score_) + '%\n' + getScoreGrade(score_)
+            scoreX_    = int(HBack_ + dist_ / 2)
+
+            d.ob.get(0).set_top(mergedTop_)
+            d.ob.get(0).set_bottom(mergedBot_)
+            d.ob.get(0).set_right(future_)
+
+            d.midLine.get(0).set_y1(midVal_)
+            d.midLine.get(0).set_y2(midVal_)
+            d.midLine.get(0).set_x2(future_)
+
+            d.bvBox.get(0).set_top(mergedTop_)
+            d.bvBox.get(0).set_bottom(midVal_)
+            d.bvBox.get(0).set_right(int(HBack_ + dist_ * (buyVol_ / 100)))
+
+            d.svBox.get(0).set_top(midVal_)
+            d.svBox.get(0).set_bottom(mergedBot_)
+            d.svBox.get(0).set_right(int(HBack_ + dist_ * (sellVol_ / 100)))
+
+            d.lbl.get(0).set_x(future_)
+            d.lbl.get(0).set_y(midVal_)
+
+            d.scoreLbl.get(0).set_x(scoreX_)
+            d.scoreLbl.get(0).set_y(midVal_)
+            d.scoreLbl.get(0).set_text(scoreTxt_)
+            d.scoreLbl.get(0).set_textcolor(getScoreColor(score_))
+
+            d.obTop.set(0, mergedTop_)
+            d.obBot.set(0, mergedBot_)
+            d.birthBar.set(0, bar_index)
+
+            merged_ := true
+    merged_
+
+method OBMergeBear(OBData d, newTop_, newBot_, LBack_, buyVol_, sellVol_, avgWick_) =>
+    merged_ = false
+    if d.ob.size() > 0 and not d.mitigated.get(0)
+        existTop_ = d.obTop.get(0)
+        existBot_ = d.obBot.get(0)
+        if isOBOverlap(newTop_, newBot_, existTop_, existBot_)
+            mergedTop_ = math.max(existTop_, newTop_)
+            mergedBot_ = math.min(existBot_, newBot_)
+            midVal_    = math.avg(mergedTop_, mergedBot_)
+            future_    = getBarTime(LBack_, ob_extLen)
+            dist_      = future_ - LBack_
+            score_     = getConfScore(mergedTop_ - mergedBot_, avgWick_, buyVol_, sellVol_)
+            scoreTxt_  = str.tostring(score_) + '%\n' + getScoreGrade(score_)
+            scoreX_    = int(LBack_ + dist_ / 2)
+
+            d.ob.get(0).set_top(mergedTop_)
+            d.ob.get(0).set_bottom(mergedBot_)
+            d.ob.get(0).set_right(future_)
+
+            d.midLine.get(0).set_y1(midVal_)
+            d.midLine.get(0).set_y2(midVal_)
+            d.midLine.get(0).set_x2(future_)
+
+            d.bvBox.get(0).set_top(mergedTop_)
+            d.bvBox.get(0).set_bottom(midVal_)
+            d.bvBox.get(0).set_right(int(LBack_ + dist_ * (buyVol_ / 100)))
+
+            d.svBox.get(0).set_top(midVal_)
+            d.svBox.get(0).set_bottom(mergedBot_)
+            d.svBox.get(0).set_right(int(LBack_ + dist_ * (sellVol_ / 100)))
+
+            d.lbl.get(0).set_x(future_)
+            d.lbl.get(0).set_y(midVal_)
+
+            d.scoreLbl.get(0).set_x(scoreX_)
+            d.scoreLbl.get(0).set_y(midVal_)
+            d.scoreLbl.get(0).set_text(scoreTxt_)
+            d.scoreLbl.get(0).set_textcolor(getScoreColor(score_))
+
+            d.obTop.set(0, mergedTop_)
+            d.obBot.set(0, mergedBot_)
+            d.birthBar.set(0, bar_index)
+
+            merged_ := true
+    merged_
+
+method OBCapSize(OBData d) =>
+    if d.ob.size() > 1
+        for i = d.ob.size() - 1 to 1
+            d.ob.get(i).delete()
+            d.midLine.get(i).delete()
+            d.bvBox.get(i).delete()
+            d.svBox.get(i).delete()
+            d.lbl.get(i).delete()
+            d.scoreLbl.get(i).delete()
+            d.ob.remove(i)
+            d.midLine.remove(i)
+            d.bvBox.remove(i)
+            d.svBox.remove(i)
+            d.lbl.remove(i)
+            d.scoreLbl.remove(i)
+            d.birthBar.remove(i)
+            d.obTop.remove(i)
+            d.obBot.remove(i)
+            d.mitigated.remove(i)
+
+method OBBullCleaner(OBData d) =>
+    if d.ob.size() > 0
+        for i = d.ob.size() - 1 to 0
+            if d.mitigated.get(i)
+                continue
+            top_  = d.obTop.get(i)
+            bot_  = d.obBot.get(i)
+            midP_ = math.avg(top_, bot_)
+            mitigateNow_ = ob_mit ? close < midP_ : close <= bot_
+            if mitigateNow_
+                d.mitigated.set(i, true)
+                array.set(ob_filledBull, 0, array.get(ob_filledBull, 0) + 1)
+                if ob_keepHistory
+                    d.ob.get(i).set_bgcolor(ob_MitCol)
+                    d.ob.get(i).set_border_color(ob_MitCol)
+                    d.bvBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.bvBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.svBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.svBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.midLine.get(i).set_color(color.new(color.gray, 70))
+                    d.scoreLbl.get(i).set_textcolor(color.new(color.gray, 50))
+                    d.scoreLbl.get(i).set_text('✓ MIT')
+                    bool(na) // ✅ FIX: Return type match
+                else
+                    d.ob.get(i).delete()
+                    d.midLine.get(i).delete()
+                    d.bvBox.get(i).delete()
+                    d.svBox.get(i).delete()
+                    d.lbl.get(i).delete()
+                    d.scoreLbl.get(i).delete()
+                    d.ob.remove(i)
+                    d.midLine.remove(i)
+                    d.bvBox.remove(i)
+                    d.svBox.remove(i)
+                    d.lbl.remove(i)
+                    d.scoreLbl.remove(i)
+                    d.birthBar.remove(i)
+                    d.obTop.remove(i)
+                    d.obBot.remove(i)
+                    d.mitigated.remove(i)
+                    bool(na) // ✅ FIX: Return type match
+
+method OBBearCleaner(OBData d) =>
+    if d.ob.size() > 0
+        for i = d.ob.size() - 1 to 0
+            if d.mitigated.get(i)
+                continue
+            top_  = d.obTop.get(i)
+            bot_  = d.obBot.get(i)
+            midP_ = math.avg(top_, bot_)
+            mitigateNow_ = ob_mit ? close > midP_ : close >= top_
+            if mitigateNow_
+                d.mitigated.set(i, true)
+                array.set(ob_filledBear, 0, array.get(ob_filledBear, 0) + 1)
+                if ob_keepHistory
+                    d.ob.get(i).set_bgcolor(ob_MitCol)
+                    d.ob.get(i).set_border_color(ob_MitCol)
+                    d.bvBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.bvBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.svBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.svBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.midLine.get(i).set_color(color.new(color.gray, 70))
+                    d.scoreLbl.get(i).set_textcolor(color.new(color.gray, 50))
+                    d.scoreLbl.get(i).set_text('✓ MIT')
+                    bool(na) // ✅ FIX: Return type match
+                else
+                    d.ob.get(i).delete()
+                    d.midLine.get(i).delete()
+                    d.bvBox.get(i).delete()
+                    d.svBox.get(i).delete()
+                    d.lbl.get(i).delete()
+                    d.scoreLbl.get(i).delete()
+                    d.ob.remove(i)
+                    d.midLine.remove(i)
+                    d.bvBox.remove(i)
+                    d.svBox.remove(i)
+                    d.lbl.remove(i)
+                    d.scoreLbl.remove(i)
+                    d.birthBar.remove(i)
+                    d.obTop.remove(i)
+                    d.obBot.remove(i)
+                    d.mitigated.remove(i)
+                    bool(na) // ✅ FIX: Return type match
+
+method OBUpdateLabels(OBData d, isBull_) =>
+    if d.ob.size() > 0
+        for i = 0 to d.ob.size() - 1
+            if d.mitigated.get(i)
+                continue
+            top_    = d.obTop.get(i)
+            bot_    = d.obBot.get(i)
+            birth_  = d.birthBar.get(i)
+            age_    = bar_index - birth_
+            fill_   = getOBFill(top_, bot_, isBull_)
+            dir_    = isBull_ ? '▲ OB' : '▼ OB'
+            score_  = getConfScore(top_ - bot_, math.max(top_ - bot_, 0.0001), 60, 40)
+            d.lbl.get(i).set_text(dir_)
+
+OB(c1_, cback_, HBack_, LBack_, hback_, lback_, green_, red_, buyVol_, sellVol_, avgWick_) =>
+    obSize_  = hback_ - lback_
+    minMove_ = (math.abs(cback_ - c1_) / math.max(cback_, 0.0001) * 100) >= ob_perc
+
+    BullOB_ = green_ and minMove_
+    BearOB_ = red_   and minMove_
+
+    bullFormed_ = false
+    bearFormed_ = false
+
+    if BullOB_ and not BullOB_[1]
+        bullFormed_ := true
+        array.set(ob_totalBull, 0, array.get(ob_totalBull, 0) + 1)
+
+        merged_ = obBullData.OBMergeBull(hback_, lback_, HBack_, buyVol_, sellVol_, avgWick_)
+
+        if not merged_
+            future_   = getBarTime(HBack_, ob_extLen)
+            midVal_   = math.avg(hback_, lback_)
+            dist_     = future_ - HBack_
+            score_    = getConfScore(obSize_, avgWick_, buyVol_, sellVol_)
+            txt_      = '▲ OB'
+            scoreTxt_ = str.tostring(score_) + '%\n' + getScoreGrade(score_)
+            scoreX_   = int(HBack_ + dist_ / 2)
+
+            b_   = box.new(HBack_, hback_, future_, lback_, bgcolor = ob_Col,   border_color = ob_Col,   extend = extend.none, xloc = xloc.bar_time)
+            m_   = line.new(HBack_, midVal_, future_, midVal_,                  xloc = xloc.bar_time, color = color.white, style = line.style_dashed, width = 1)
+            bb_  = box.new(HBack_, midVal_, int(HBack_ + dist_ * (buyVol_  / 100)), hback_, bgcolor = ob_UpCol, border_color = ob_UpCol, extend = extend.none, xloc = xloc.bar_time)
+            sb_  = box.new(HBack_, lback_,  int(HBack_ + dist_ * (sellVol_ / 100)), midVal_, bgcolor = ob_DnCol, border_color = ob_DnCol, extend = extend.none, xloc = xloc.bar_time)
+            lb_  = label.new(future_, midVal_, txt_,      xloc = xloc.bar_time, style = label.style_label_left,   color = color.new(color.white, 100), textcolor = color.white, size = size.large)
+            slb_ = label.new(scoreX_, midVal_, scoreTxt_, xloc = xloc.bar_time, style = label.style_label_center, color = color.new(color.black, 75),  textcolor = getScoreColor(score_),  size = size.normal)
+
+            obBullData.ob.unshift(b_)
+            obBullData.midLine.unshift(m_)
+            obBullData.bvBox.unshift(bb_)
+            obBullData.svBox.unshift(sb_)
+            obBullData.lbl.unshift(lb_)
+            obBullData.scoreLbl.unshift(slb_)
+            obBullData.birthBar.unshift(bar_index)
+            obBullData.obTop.unshift(hback_)
+            obBullData.obBot.unshift(lback_)
+            obBullData.mitigated.unshift(false)
+
+            obBullData.OBCapSize()
+
+    if BearOB_ and not BearOB_[1]
+        bearFormed_ := true
+        array.set(ob_totalBear, 0, array.get(ob_totalBear, 0) + 1)
+
+        merged_ = obBearData.OBMergeBear(hback_, lback_, LBack_, buyVol_, sellVol_, avgWick_)
+
+        if not merged_
+            future_   = getBarTime(LBack_, ob_extLen)
+            midVal_   = math.avg(hback_, lback_)
+            dist_     = future_ - LBack_
+            score_    = getConfScore(obSize_, avgWick_, buyVol_, sellVol_)
+            txt_      = '▼ OB'
+            scoreTxt_ = str.tostring(score_) + '%\n' + getScoreGrade(score_)
+            scoreX_   = int(LBack_ + dist_ / 2)
+
+            b_   = box.new(LBack_, hback_, future_, lback_, bgcolor = ob_Col,   border_color = ob_Col,   extend = extend.none, xloc = xloc.bar_time)
+            m_   = line.new(LBack_, midVal_, future_, midVal_,                  xloc = xloc.bar_time, color = color.white, style = line.style_dashed, width = 1)
+            bb_  = box.new(LBack_, midVal_, int(LBack_ + dist_ * (buyVol_  / 100)), hback_, bgcolor = ob_UpCol, border_color = ob_UpCol, extend = extend.none, xloc = xloc.bar_time)
+            sb_  = box.new(LBack_, lback_,  int(LBack_ + dist_ * (sellVol_ / 100)), midVal_, bgcolor = ob_DnCol, border_color = ob_DnCol, extend = extend.none, xloc = xloc.bar_time)
+            lb_  = label.new(future_, midVal_, txt_,      xloc = xloc.bar_time, style = label.style_label_left,   color = color.new(color.white, 100), textcolor = color.new(#2196F3, 0), size = size.large)
+            slb_ = label.new(scoreX_, midVal_, scoreTxt_, xloc = xloc.bar_time, style = label.style_label_center, color = color.new(color.black, 75),  textcolor = getScoreColor(score_),  size = size.normal)
+
+            obBearData.ob.unshift(b_)
+            obBearData.midLine.unshift(m_)
+            obBearData.bvBox.unshift(bb_)
+            obBearData.svBox.unshift(sb_)
+            obBearData.lbl.unshift(lb_)
+            obBearData.scoreLbl.unshift(slb_)
+            obBearData.birthBar.unshift(bar_index)
+            obBearData.obTop.unshift(hback_)
+            obBearData.obBot.unshift(lback_)
+            obBearData.mitigated.unshift(false)
+
+            obBearData.OBCapSize()
+
+    [bullFormed_, bearFormed_]
+
+[ob_c1, ob_cback, ob_hback, ob_lback, ob_v]       = request.security(syminfo.tickerid, ob_tf, ob_getMTF(),   lookahead = barmerge.lookahead_on)
+[ob_green, ob_red, ob_wick, ob_avgWick]            = request.security(syminfo.tickerid, ob_tf, ob_getCandle(), lookahead = barmerge.lookahead_on)
+
+ob_HBack  = BarsBack(ob_hback, high)
+ob_LBack  = BarsBack(ob_lback, low)
+ob_buyVol  = VolumePower(ob_v, ob_cback, ob_lback, ob_hback, true)
+ob_sellVol = VolumePower(ob_v, ob_cback, ob_lback, ob_hback, false)
+
+[ob_bullFormed, ob_bearFormed] = OB(ob_c1, ob_cback, ob_HBack, ob_LBack, ob_hback, ob_lback, ob_green, ob_red, ob_buyVol, ob_sellVol, ob_avgWick)
+if ob_bullFormed or ob_bearFormed
+    ob_TLine := math.avg(ohlc4, ob_TLine)
+obBullData.OBBullCleaner()
+obBearData.OBBearCleaner()
+obBullData.OBUpdateLabels(true)
+obBearData.OBUpdateLabels(false)
+
+ob_priceInBull = obBullData.ob.size() > 0 ? not obBullData.mitigated.get(0) and low  <= obBullData.obTop.get(0) and high >= obBullData.obBot.get(0) : false
+ob_priceInBear = obBearData.ob.size() > 0 ? not obBearData.mitigated.get(0) and high >= obBearData.obBot.get(0) and low  <= obBearData.obTop.get(0) : false
+
+
+// ==============================================================================
+// ███  PART 4: FVG Pro (Complete Code Added & Fixed)
+// ==============================================================================
+
+fvg_tf          = input.timeframe('',   'FVG Timeframe',                    group = '📐 FVG: Core Settings', inline = 'fvgtf')
+fvg_bodySens    = input.float(1.3,        'Sensitivity', step = 0.1, minval=0, group = '📐 FVG: Core Settings', inline = 'fvgtf')
+fvg_mitMid      = input.bool(true,     'Mitigate on Midpoint',              group = '📐 FVG: Mitigation')
+fvg_bodyClose   = input.bool(false,      'Require Body Close for Mitigation', group = '📐 FVG: Mitigation')
+fvg_keepHistory = input.bool(false,     'Keep Mitigated FVGs (faded)',       group = '📐 FVG: Mitigation')
+fvg_extLen      = input.int(10,         'Extend Boxes (bars)', minval = 1,   group = '📐 FVG: Style')
+fvg_UpCol       = input.color(color.new(#00ffbb, 50), 'Bull FVG',           group = '📐 FVG: Style', inline = 'fvgcol')
+fvg_DnCol       = input.color(color.new(#ff1100, 50), 'Bear FVG',           group = '📐 FVG: Style', inline = 'fvgcol')
+fvg_Col         = input.color(color.new(color.gray, 85), 'Base',            group = '📐 FVG: Style', inline = 'fvgcol')
+fvg_MitCol      = input.color(color.new(color.gray, 92), 'Mitigated',       group = '📐 FVG: Style', inline = 'fvgcol')
+
+type FVGData
+    array<box>   fvg
+    array<box>   bvBox
+    array<box>   svBox
+    array<line>  midLine
+    array<label> lbl
+    array<label> scoreLbl
+    array<int>   birthBar
+    array<float> gapTop
+    array<float> gapBot
+    array<bool>  mitigated
+
+var fvgBullData = FVGData.new(
+ array.new<box>(), array.new<box>(), array.new<box>(), array.new<line>(),
+ array.new<label>(), array.new<label>(), array.new<int>(),
+ array.new<float>(), array.new<float>(), array.new<bool>())
+
+var fvgBearData = FVGData.new(
+ array.new<box>(), array.new<box>(), array.new<box>(), array.new<line>(),
+ array.new<label>(), array.new<label>(), array.new<int>(),
+ array.new<float>(), array.new<float>(), array.new<bool>())
+
+var fvg_save = array.new_float(0)
+
+getFVGFill(top_, bot_, isBull_) =>
+    gapSize_ = top_ - bot_
+    result_  = 0
+    if gapSize_ <= 0
+        result_ := 100
+    else if isBull_
+        filled_ = math.max(0.0, top_ - math.max(low, bot_))
+        result_ := math.min(int(math.round(filled_ / gapSize_ * 100)), 100)
+    else
+        filled_ = math.max(0.0, math.min(high, top_) - bot_)
+        result_ := math.min(int(math.round(filled_ / gapSize_ * 100)), 100)
+    result_
+
+fvg_getMTF() => [close, high, low, high[2], low[2], volume]
+
+fvg_getCandle() =>
+    wick_ = math.max(close, open) - math.min(close, open)
+    array.push(fvg_save, wick_)
+    if fvg_save.size() > 100
+        fvg_save.shift()
+    [wick_, array.avg(fvg_save)]
+
+method FVGBullCleaner(FVGData d) =>
+    if d.fvg.size() > 0
+        for i = d.fvg.size() - 1 to 0
+            if d.mitigated.get(i)
+                continue
+            top_  = d.gapTop.get(i)
+            bot_  = d.gapBot.get(i)
+            midP_ = math.avg(top_, bot_)
+            condBody_ = fvg_mitMid ? close < midP_ : close <= bot_
+            condWick_ = fvg_mitMid ? low   < midP_ : low   <= bot_
+            mitigateNow_ = fvg_bodyClose ? condBody_ : condWick_
+            if mitigateNow_
+                d.mitigated.set(i, true)
+                if fvg_keepHistory
+                    d.fvg.get(i).set_bgcolor(fvg_MitCol)
+                    d.fvg.get(i).set_border_color(fvg_MitCol)
+                    d.bvBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.bvBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.svBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.svBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.midLine.get(i).set_color(color.new(color.gray, 70))
+                    d.scoreLbl.get(i).set_textcolor(color.new(color.gray, 50))
+                    d.scoreLbl.get(i).set_text('✓ MIT')
+                    bool(na) // ✅ FIX: Return type match
+                else
+                    d.fvg.get(i).delete()
+                    d.midLine.get(i).delete()
+                    d.bvBox.get(i).delete()
+                    d.svBox.get(i).delete()
+                    d.lbl.get(i).delete()
+                    d.scoreLbl.get(i).delete()
+                    d.fvg.remove(i)
+                    d.midLine.remove(i)
+                    d.bvBox.remove(i)
+                    d.svBox.remove(i)
+                    d.lbl.remove(i)
+                    d.scoreLbl.remove(i)
+                    d.birthBar.remove(i)
+                    d.gapTop.remove(i)
+                    d.gapBot.remove(i)
+                    d.mitigated.remove(i)
+                    bool(na) // ✅ FIX: Return type match
+
+method FVGBearCleaner(FVGData d) =>
+    if d.fvg.size() > 0
+        for i = d.fvg.size() - 1 to 0
+            if d.mitigated.get(i)
+                continue
+            top_  = d.gapTop.get(i)
+            bot_  = d.gapBot.get(i)
+            midP_ = math.avg(top_, bot_)
+            condBody_ = fvg_mitMid ? close > midP_ : close >= top_
+            condWick_ = fvg_mitMid ? high  > midP_ : high  >= top_
+            mitigateNow_ = fvg_bodyClose ? condBody_ : condWick_
+            if mitigateNow_
+                d.mitigated.set(i, true)
+                if fvg_keepHistory
+                    d.fvg.get(i).set_bgcolor(fvg_MitCol)
+                    d.fvg.get(i).set_border_color(fvg_MitCol)
+                    d.bvBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.bvBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.svBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.svBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.midLine.get(i).set_color(color.new(color.gray, 70))
+                    d.scoreLbl.get(i).set_textcolor(color.new(color.gray, 50))
+                    d.scoreLbl.get(i).set_text('✓ MIT')
+                    bool(na) // ✅ FIX: Return type match
+                else
+                    d.fvg.get(i).delete()
+                    d.midLine.get(i).delete()
+                    d.bvBox.get(i).delete()
+                    d.svBox.get(i).delete()
+                    d.lbl.get(i).delete()
+                    d.scoreLbl.get(i).delete()
+                    d.fvg.remove(i)
+                    d.midLine.remove(i)
+                    d.bvBox.remove(i)
+                    d.svBox.remove(i)
+                    d.lbl.remove(i)
+                    d.scoreLbl.remove(i)
+                    d.birthBar.remove(i)
+                    d.gapTop.remove(i)
+                    d.gapBot.remove(i)
+                    d.mitigated.remove(i)
+                    bool(na) // ✅ FIX: Return type match
+
+// FVG Detection Logic
+[fvg_c, fvg_h, fvg_l, fvg_h2, fvg_l2, fvg_v] = request.security(syminfo.tickerid, fvg_tf, fvg_getMTF(), lookahead = barmerge.lookahead_on)
+[fvg_wick, fvg_avgWick] = request.security(syminfo.tickerid, fvg_tf, fvg_getCandle(), lookahead = barmerge.lookahead_on)
+
+bool fvg_bullCondition = fvg_l > fvg_h2
+bool fvg_bearCondition = fvg_h < fvg_l2
+
+if fvg_bullCondition and not fvg_bullCondition[1]
+    float gapTop = fvg_l
+    float gapBot = fvg_h2
+    float gapSize = gapTop - gapBot
+    if gapSize > 0
+        int HBack = time
+        float midVal_ = math.avg(gapTop, gapBot)
+        float future_ = getBarTime(HBack, fvg_extLen)
+        float dist_ = future_ - HBack
+        
+        int score_ = getConfScore(gapSize, fvg_avgWick, 60, 40)
+        string txt_ = '▲ FVG'
+        string scoreTxt_ = str.tostring(score_) + '%\n' + getScoreGrade(score_)
+        int scoreX_ = int(HBack + dist_ / 2)
+
+        box b_ = box.new(HBack, gapTop, int(future_), gapBot, bgcolor = fvg_Col, border_color = fvg_Col, extend = extend.none, xloc = xloc.bar_time)
+        line m_ = line.new(HBack, midVal_, int(future_), midVal_, xloc = xloc.bar_time, color = color.white, style = line.style_dashed, width = 1)
+        box bb_ = box.new(HBack, midVal_, int(HBack + dist_ * 0.6), gapTop, bgcolor = fvg_UpCol, border_color = fvg_UpCol, extend = extend.none, xloc = xloc.bar_time)
+        box sb_ = box.new(HBack, gapBot, int(HBack + dist_ * 0.4), midVal_, bgcolor = fvg_DnCol, border_color = fvg_DnCol, extend = extend.none, xloc = xloc.bar_time)
+        label lb_ = label.new(int(future_), midVal_, txt_, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = color.white, size = size.large)
+        label slb_ = label.new(scoreX_, midVal_, scoreTxt_, xloc = xloc.bar_time, style = label.style_label_center, color = color.new(color.black, 75), textcolor = getScoreColor(score_), size = size.normal)
+        fvgBullData.fvg.unshift(b_)
+        fvgBullData.midLine.unshift(m_)
+        fvgBullData.bvBox.unshift(bb_)
+        fvgBullData.svBox.unshift(sb_)
+        fvgBullData.lbl.unshift(lb_)
+        fvgBullData.scoreLbl.unshift(slb_)
+        fvgBullData.birthBar.unshift(bar_index)
+        fvgBullData.gapTop.unshift(gapTop)
+        fvgBullData.gapBot.unshift(gapBot)
+        fvgBullData.mitigated.unshift(false)
+
+if fvg_bearCondition and not fvg_bearCondition[1]
+    float gapTop = fvg_l2
+    float gapBot = fvg_h
+    float gapSize = gapTop - gapBot
+    if gapSize > 0
+        int LBack = time
+        float midVal_ = math.avg(gapTop, gapBot)
+        float future_ = getBarTime(LBack, fvg_extLen)
+        float dist_ = future_ - LBack
+        
+        int score_ = getConfScore(gapSize, fvg_avgWick, 40, 60)
+        string txt_ = '▼ FVG'
+        string scoreTxt_ = str.tostring(score_) + '%\n' + getScoreGrade(score_)
+        int scoreX_ = int(LBack + dist_ / 2)
+
+        box b_ = box.new(LBack, gapTop, int(future_), gapBot, bgcolor = fvg_Col, border_color = fvg_Col, extend = extend.none, xloc = xloc.bar_time)
+        line m_ = line.new(LBack, midVal_, int(future_), midVal_, xloc = xloc.bar_time, color = color.white, style = line.style_dashed, width = 1)
+        box bb_ = box.new(LBack, midVal_, int(LBack + dist_ * 0.4), gapTop, bgcolor = fvg_UpCol, border_color = fvg_UpCol, extend = extend.none, xloc = xloc.bar_time)
+        box sb_ = box.new(LBack, gapBot, int(LBack + dist_ * 0.6), midVal_, bgcolor = fvg_DnCol, border_color = fvg_DnCol, extend = extend.none, xloc = xloc.bar_time)
+        label lb_ = label.new(int(future_), midVal_, txt_, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = color.new(#ff1100, 0), size = size.large)
+        label slb_ = label.new(scoreX_, midVal_, scoreTxt_, xloc = xloc.bar_time, style = label.style_label_center, color = color.new(color.black, 75), textcolor = getScoreColor(score_), size = size.normal)        
+        fvgBearData.fvg.unshift(b_)
+        fvgBearData.midLine.unshift(m_)
+        fvgBearData.bvBox.unshift(bb_)
+        fvgBearData.svBox.unshift(sb_)
+        fvgBearData.lbl.unshift(lb_)
+        fvgBearData.scoreLbl.unshift(slb_)
+        fvgBearData.birthBar.unshift(bar_index)
+        fvgBearData.gapTop.unshift(gapTop)
+        fvgBearData.gapBot.unshift(gapBot)
+        fvgBearData.mitigated.unshift(false)
+
+fvgBullData.FVGBullCleaner()
+fvgBearData.FVGBearCleaner()
+
+/////indicator('buysellsignal-yashgode9', 'buysellsignal-yashgode9', overlay=true, format=format.price, max_labels_count=200, max_lines_count=50, max_boxes_count=500)
+//@author = yashgode9 [YASH NANDKUMAR GODE]
+import yashgode9/signalLib_yashgode9/2 as signalLib
+
+//===================== Input Configuration =====================//
+DEPTH_ENGINE      = input.int(30, 'DEPTH_ENGINE',     minval=1, step=1, group='signalLib Config')
+DEVIATION_ENGINE  = input.int(1,  'DEVIATION_ENGINE', minval=1, step=1, group='signalLib Config')
+BACKSTEP_ENGINE   = input.int(2,  'BACKSTEP_ENGINE',  minval=2, step=1, group='signalLib Config')
+
+labels_transparency  = input.int(0, 'Labels Transparency', minval=0, maxval=100, group='Labels')
+buycolor             = input.color(#03ff85, 'Buy Color', group='Colors')
+sellcolor            = input.color(color.rgb(252, 8, 8, 18), 'Sell Color', group='Colors')
+bg_buy_color         = input.color(color.rgb(0, 255, 100, 85), 'Background Buy Color (Green)', group='Background')
+bg_sell_color        = input.color(color.rgb(255, 0, 0, 85), 'Background Sell Color (Red)', group='Background')
+show_bg              = input.bool(true, 'Show Background', group='Background')
+
+labelsize_input = input.int(3, 'Label Size', minval=1, maxval=5, group='Labels')
+labelsize = switch labelsize_input
+    1 => size.tiny
+    2 => size.small
+    3 => size.normal
+    4 => size.large
+    5 => size.huge
+
+//===================== Constants =====================//
+int BUY_DIR  = -1
+int SELL_DIR = 1
+BLACK = color.rgb(8, 8, 8)
+
+buy_label_color  = color.new(buycolor, labels_transparency)
+sell_label_color = color.new(sellcolor, labels_transparency)
+label_text_color = color.new(BLACK, labels_transparency)
+
+// Full height cover करण्यासाठी extreme values
+float CHART_TOP    = 999999999.0
+float CHART_BOTTOM = 0.0
+
+//===================== Main Logic =====================//
+[direction, zee1, zee2] = signalLib.signalLib(low, high, DEPTH_ENGINE, DEVIATION_ENGINE, BACKSTEP_ENGINE)
+
+direction_changed = ta.change(direction) != 0
+
+var label current_label = na
+
+zee2_time  = zee2.time
+zee2_price = zee2.price
+
+zee2_time_changed  = ta.change(zee2_time)  != 0
+zee2_price_changed = ta.change(zee2_price) != 0
+zee2_changed       = zee2_time_changed or zee2_price_changed
+
+//===================== Box Variables =====================//
+var box current_box  = na    // सध्याचा active (open-ended) box
+var box previous_box = na    // मागचा finalized box (direction change वेळी right set करण्यासाठी)
+
+//===================== Helper Function =====================//
+make_box(int left_t, color clr) =>
+    box.new(
+         left         = left_t,
+         top          = CHART_TOP,
+         right        = time + (time - time[1]),
+         bottom       = CHART_BOTTOM,
+         xloc         = xloc.bar_time,
+         border_color = color.new(color.white, 100),
+         bgcolor      = clr,
+         extend       = extend.none)
+
+//===================== Label & Box Management =====================//
+if zee2_changed and show_bg
+    is_buy   = direction == BUY_DIR
+    lbl_clr  = is_buy ? buy_label_color  : sell_label_color
+    lbl_styl = is_buy ? label.style_label_up : label.style_label_down
+    lbl_text = is_buy ? 'Buy-point' : 'Sell-point'
+    box_clr  = is_buy ? bg_buy_color : bg_sell_color
+
+    if direction != direction[1]
+        //=== DIRECTION CHANGE (Reversal Confirmed) ===//
+
+        // 1) मागचा label delete (same direction चा residual असेल तर)
+        // Direction change म्हणजे नवीन label — मागचा ठेवायचा
+
+        // 2) मागचा active box finalize करा — right edge = या नवीन signal चा time
+        if not na(current_box)
+            box.set_right(current_box, zee2_time)
+            previous_box := current_box
+
+        // 3) नवीन box सुरू करा
+        current_box := make_box(zee2_time, box_clr)
+
+    else
+        //=== SAME DIRECTION (Signal Shift / Repaint) ===//
+
+        // 1) मागचा label delete करा
+        if not na(current_label)
+            label.delete(current_label)
+
+        // 2) मागचा active box delete करा
+        if not na(current_box)
+            box.delete(current_box)
+
+        // 3) मागच्या finalized box चा right edge = नवीन shifted position
+        if not na(previous_box)
+            box.set_right(previous_box, zee2_time)
+
+        // 4) नवीन box बनवा shifted position पासून
+        current_box := make_box(zee2_time, box_clr)
+
+    // Label बनवा
+    current_label := label.new(
+         x         = zee2_time,
+         y         = zee2_price,
+         text      = lbl_text,
+         xloc      = xloc.bar_time,
+         yloc      = yloc.price,
+         color     = lbl_clr,
+         style     = lbl_styl,
+         textcolor = label_text_color,
+         size      = labelsize)
+
+else if not zee2_changed and show_bg
+    // Labels without box change — original label logic
+    // (no action needed here)
+    noop = 0
+
+// Label-only logic (when background is off)
+if zee2_changed and not show_bg
+    is_buy   = direction == BUY_DIR
+    lbl_clr  = is_buy ? buy_label_color  : sell_label_color
+    lbl_styl = is_buy ? label.style_label_up : label.style_label_down
+    lbl_text = is_buy ? 'Buy-point' : 'Sell-point'
+
+    if direction == direction[1] and not na(current_label)
+        label.delete(current_label)
+
+    current_label := label.new(
+         x         = zee2_time,
+         y         = zee2_price,
+         text      = lbl_text,
+         xloc      = xloc.bar_time,
+         yloc      = yloc.price,
+         color     = lbl_clr,
+         style     = lbl_styl,
+         textcolor = label_text_color,
+         size      = labelsize)
+
+//===================== Extend Current Box Every Bar =====================//
+if not na(current_box) and show_bg
+    box.set_right(current_box, time + (time - time[1]))
+
+//===================== Alert System =====================//
+if direction_changed
+    if direction == SELL_DIR
+        alert("Sell signal generated!!!", alert.freq_once_per_bar_close)
+    else
+        alert("Buy signal generated!!!", alert.freq_once_per_bar_close)

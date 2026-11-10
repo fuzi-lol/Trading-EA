@@ -1,0 +1,13 @@
+SMC_V6: RR 2.5, NY Only -- BEST RISK-ADJUSTED
+Result: $1,932 profit | 12.66% DD | 55.45% WR | PF 1.58 | Sharpe 15.25 | 101 trades | RecFact 1.53
+
+Parameters:
+- FastEMA=9, SlowEMA=21, EMA_TF=M15
+- RSI=14, BuyLvl=45, SellLvl=55, OB=80, OS=20
+- ATR=14, ATR_SL_Multi=1.5, RR=2.5
+- MinSL=200, MaxSL=1200
+- BE@1.0R lock=20pts, Trail@2.0R step=100pts
+- FVG: Lookback=25, MinWidth=30pts, MaxDist=2.0 ATR
+- OB: Lookback=30, DispMulti=1.5, MaxDist=2.0 ATR
+- London=DISABLED (23-23), NY=15-21, SkipTuesday=true
+- MaxTrades=2/day, Cooldown=6 bars, MaxSpread=50

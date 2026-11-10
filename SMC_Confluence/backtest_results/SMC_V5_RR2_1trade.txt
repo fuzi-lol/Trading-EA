@@ -1,0 +1,13 @@
+SMC_V5: RR 2.0, 1 trade/day -- SAFEST
+Result: $773 profit | 8.59% DD | 59.14% WR | PF 1.30 | Sharpe 11.18 | 93 trades
+
+Parameters:
+- FastEMA=9, SlowEMA=21, EMA_TF=M15
+- RSI=14, BuyLvl=45, SellLvl=55, OB=80, OS=20
+- ATR=14, ATR_SL_Multi=1.5, RR=2.0
+- MinSL=200, MaxSL=1000
+- BE@0.8R lock=30pts, Trail@1.5R step=80pts
+- FVG: Lookback=25, MinWidth=30pts, MaxDist=2.0 ATR
+- OB: Lookback=30, DispMulti=1.5, MaxDist=2.0 ATR
+- London=11-13, NY=15-21, SkipTuesday=true
+- MaxTrades=1/day, Cooldown=8 bars, MaxSpread=50

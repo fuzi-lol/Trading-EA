@@ -1,0 +1,431 @@
+// little finger by hamza le 31-10-2024
+
+//@version=5
+indicator("little finger by hamza", overlay=false)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///                                                            Tooltips                                                                                 ///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+t1 = "Determines the Length of Z-Score Assessment. Defaults to a 75 lookback period" 
+t2 = "Determines the length of the SMA if the user selects Show SMA. Default is 75, but for a more responsive SMA you can reduce it to 14. Optional."
+t3 = "Shows the probability zones in colour." 
+t4 = "Will Display a summarized Z-Table." 
+t5 = "Display's the SMA."  
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///                                                            User Inputs                                                                              ///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+len = input.int(75, "Lookback Length", tooltip=t1)
+plot_type = input.string("Area", "Plot Type", ["Area", "Candles"])
+txtcolor = input.string("White", "Text Colour", ["White", "Black", "Blue"])
+smalen = input.int(75, "SMA Length", tooltip=t2) 
+probfill = input.bool(true, "Distribution Probaiblity Fills", tooltip=t3) 
+showztable = input.bool(false, "Show Z-Table", tooltip=t4) 
+showsma = input.bool(true, "Show SMA", tooltip=t5) 
+showsd = input.bool(false, "Show SMA Standard Deviation Bands")
+roundup = input.int(2, "Round Target Prices Up or Down")
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///                                                            Z-Score/SMA Calculations                                                                  ///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+z = (close - ta.sma(close, len)) / ta.stdev(close, len) 
+z_hi = (high - ta.sma(high, len)) / ta.stdev(high, len) 
+z_lo = (low - ta.sma(low, len)) / ta.stdev(low, len) 
+z_op = (open - ta.sma(open, len)) / ta.stdev(open, len) 
+
+float z_close = 0.0
+float z_open = 0.0 
+float z_high = 0.0 
+float z_low = 0.0 
+
+if plot_type == "Candles"
+    z_close := z 
+    z_high := z_hi
+    z_low :=z_lo
+    z_open := z_op 
+
+cl_sma = ta.sma(close, len) 
+cl_sd = ta.stdev(close, len) 
+
+// SMA 
+var float z_sma = 0.0 
+
+if showsma 
+    z_sma := ta.sma(z, smalen) 
+sma_sd_bands = ta.stdev(z_sma, smalen) 
+plot(showsd ? z_sma + sma_sd_bands : na, "SMA UCL Bands", color = color.aqua)
+plot(showsd ? z_sma - sma_sd_bands : na, "SMA LCL Bands", color = color.aqua)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///                                                           Colours                                                                                  ///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+color red = color.red 
+color green = color.green 
+color orange = color.orange 
+color yellow = color.yellow 
+color labelcolor = color.new(color.white, 100) 
+color gray = color.new(color.gray, 25) 
+color white = color.white 
+color black = color.rgb(0, 0, 0) 
+color blue = color.blue 
+// Colour for Probability Distribution 
+color greenfill = color.new(color.green, 75) 
+color yellowfill = color.new(color.yellow, 75) 
+color redfill = color.new(color.red, 75) 
+color candlecolor = z_op > z ? color.red : z > z_op ? color.lime : color.lime 
+
+plotcandle(z_open, z_high, z_low, z_close, "Candles", color = candlecolor) 
+f_txtcolor(string) => 
+    if string == "White" 
+        color = white 
+    else if string =="Black" 
+        color = black
+    else if string == "Blue"
+        color = blue  
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///                                                            Logical Assessments                                                                      ///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool zero_one = z >= 0 and z < 1 
+bool one_two = z >= 1 and z < 2.01 
+bool two_three = z >= 2 and z < 3.01 
+bool three = z >= 3 
+bool zero = z >= 0.99 and z <= -0.99 
+bool neg_zero_one = z < 0 and z > -1 
+bool neg_one_two = z <= -1 and z > -2 
+bool neg_two_three = z <= -2 and z > -3 
+bool neg_three = z <= -3 
+falling = ta.falling(z_sma, 3) 
+rising = ta.rising(z_sma, 3) 
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///                                                         Plots                                                                                        ///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+color z_color_plot = z > 0 ? green : z <= 0 ? red : orange 
+plot(plot_type == "Area" ? z : na, "Z-Score", color=z_color_plot, style=plot.style_area) 
+plot(z_sma, "Z-SMA", color=showsma ? white : labelcolor, linewidth=2) 
+
+neutral = 0 
+onesd = 1 
+twosd = 2 
+threesd = 3 
+neg_onesd = -1 
+neg_twosd = -2 
+neg_threesd = -3 
+
+a = plot(neutral, color=greenfill)  
+b = plot(onesd, color=yellowfill)  
+c = plot(twosd, color=redfill) 
+d = plot(threesd, color=redfill)  
+e = plot(neg_onesd, color=greenfill)  
+f = plot(neg_twosd, color=yellowfill) 
+g = plot(neg_threesd, color=redfill) 
+
+fill(a, b, color=probfill ? greenfill : na) 
+fill(b, c, color=probfill ? yellowfill : na) 
+fill(c, d, color=probfill ? redfill : na) 
+fill(a, e, color=probfill ? greenfill : na) 
+fill(e, f, color=probfill ? yellowfill : na) 
+fill(f, g, color=probfill ? redfill : na) 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///                                                           Price Level Calculations                                                                  ///
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+neutral_price = (cl_sma) + (0 * cl_sd) 
+onesd_price = (cl_sma) + (1 * cl_sd) 
+twosd_price = (cl_sma) + (2 * cl_sd) 
+threesd_price = (cl_sma) + (3 * cl_sd) 
+neg_onesd_price = (cl_sma) + (-1 * cl_sd) 
+neg_twosd_price = (cl_sma) + (-2 * cl_sd) 
+neg_threesd_price = (cl_sma) + (-3 * cl_sd) 
+
+
+    
+//=============================================================================================
+
+
+box_ob            = input.bool(true, "Toggle Order Block", group="ORDER BLOCK")
+box_hide_gray     = input.bool(true, "Hide gray boxes", group="ORDER BLOCK")
+bos_type          = input.string("High and Low", "MSB trigger", ["High and Low", "Close and Open"], group="ORDER BLOCK")
+box_sv            = input.bool(true, "Plot Order Block boxes", group="ORDER BLOCK")
+box_test_delay    = input.int(3, "Delay to count test of Order Block box", 1, group="ORDER BLOCK")
+box_fill_delay    = input.int(3, "Delay to count fill of Order Block box", 1, group="ORDER BLOCK")
+box_test_sv       = input.bool(true, "Dim tested Order Block boxes", group="ORDER BLOCK")
+box_stop_sv       = input.bool(true, "Stop plotting filled Order Block boxes", group="ORDER BLOCK")
+
+
+
+// Get components
+
+var float[] pvh1_price     = array.new_float(1000, na)
+var int[]   pvh1_time      = array.new_int  (1000, na)
+var float[] pvl1_price     = array.new_float(1000, na)
+var int[]   pvl1_time      = array.new_int  (1000, na)
+var float[] pvh2_price     = array.new_float(1000, na)
+var int[]   pvh2_time      = array.new_int  (1000, na)
+var float[] pvl2_price     = array.new_float(1000, na)
+var int[]   pvl2_time      = array.new_int  (1000, na)
+var float   htcmrll_price  = na
+var int     htcmrll_time   = na
+var float   ltcmrhh_price  = na
+var int     ltcmrhh_time   = na
+var box[]   long_boxes     = array.new_box()
+var box[]   short_boxes    = array.new_box()
+var float   temp_pv_0      = na
+var float   temp_pv_1      = na
+var float   temp_pv_2      = na
+bool        pvh            = high < high[1] and high[1] > high[6]
+bool        pvl            = low  > low [1] and low [1] < low [6]
+int         pv1_time       = bar_index[1]
+float       pv1_high       = high[1]
+float       pv1_low        = low [1]
+float       trigger_high   = bos_type == "High and Low" ? high : math.max(open, close)
+float       trigger_low    = bos_type == "High and Low" ? low  : math.min(open, close)
+
+
+// Colors
+green1    = #00DD00, green50  = color.new(green1, 50),  green20  = color.new(green1, 80)
+red1      = #DD0000, red50    = color.new(red1, 50),    red20    = color.new(red1, 80)
+silver   = #B2B5BE, silver50 = color.new(silver, 50), silver20 = color.new(silver, 80)
+// Plots
+
+
+if box_ob and barstate.isconfirmed
+    if pvh
+        array.pop(pvh1_price)
+        array.pop(pvh1_time)
+        array.unshift(pvh1_price, pv1_high)
+        array.unshift(pvh1_time, pv1_time)
+        if array.size(pvh1_price) > 6
+            temp_pv_0 := array.get(pvh1_price, 0)
+            temp_pv_1 := array.get(pvh1_price, 1)
+            temp_pv_2 := array.get(pvh1_price, 6)
+            if temp_pv_0 > temp_pv_1
+                for i = 0 to array.size(pvl1_time) - 1 by 1
+                    temp_ltcmrhh_time = array.get(pvl1_time, i)
+                    if temp_ltcmrhh_time < array.get(pvh1_time, 0)
+                        ltcmrhh_price := array.get(pvl1_price, i)
+                        ltcmrhh_time := temp_ltcmrhh_time
+                        break
+            if temp_pv_0 < temp_pv_1 and temp_pv_1 > temp_pv_2
+                array.pop(pvh2_price)
+                array.pop(pvh2_time)
+                array.unshift(pvh2_price, temp_pv_1)
+                array.unshift(pvh2_time, array.get(pvh1_time, 1))
+    if pvl
+        array.pop(pvl1_price)
+        array.pop(pvl1_time)
+        array.unshift(pvl1_price, pv1_low)
+        array.unshift(pvl1_time, pv1_time)
+        if array.size(pvl1_price) > 6
+            temp_pv_0 := array.get(pvl1_price, 0)
+            temp_pv_1 := array.get(pvl1_price, 1)
+            temp_pv_2 := array.get(pvl1_price, 6)
+            if temp_pv_0 < temp_pv_1
+                for i = 0 to array.size(pvh1_time) - 1 by 1
+                    temp_htcmrll_time = array.get(pvh1_time, i)
+                    if temp_htcmrll_time < array.get(pvl1_time, 0)
+                        htcmrll_price := array.get(pvh1_price, i)
+                        htcmrll_time := temp_htcmrll_time
+                        break
+            if temp_pv_0 > temp_pv_1 and temp_pv_1 < temp_pv_2
+                array.pop(pvl2_price)
+                array.pop(pvl2_time)
+                array.unshift(pvl2_price, temp_pv_1)
+                array.unshift(pvl2_time, array.get(pvl1_time, 1))
+    if trigger_high > htcmrll_price
+        if box_sv
+            loBox = box.new(left=array.get(pvl1_time, 0), top=math.min(high[bar_index - array.get(pvl1_time, 0)], high[bar_index - array.get(pvl1_time, 0) + 1]), right=bar_index, bottom=array.get(pvl1_price, 0), bgcolor=color.rgb(0, 255, 0, 80), border_color=color.rgb(0, 255, 0, 80), extend=extend.right,force_overlay=true)
+            if array.size(long_boxes) >= 25
+                box.delete(array.shift(long_boxes))
+            array.push(long_boxes, loBox)
+        htcmrll_price := na
+        htcmrll_price
+    if trigger_low < ltcmrhh_price
+        if box_sv
+            hiBox = box.new(left=array.get(pvh1_time, 0), top=array.get(pvh1_price, 0), right=bar_index, bottom=math.max(low[bar_index - array.get(pvh1_time, 0)], low[bar_index - array.get(pvh1_time, 0) + 1]), bgcolor=color.rgb(255, 0, 0, 80), border_color=color.rgb(255, 0, 0, 80), extend=extend.right,force_overlay=true)
+            if array.size(short_boxes) >= 25
+                box.delete(array.shift(short_boxes))
+            array.push(short_boxes, hiBox)
+        ltcmrhh_price := na
+        ltcmrhh_price
+    if array.size(short_boxes) > 0
+        for i = array.size(short_boxes) - 1 to 0 by 1
+            tbox = array.get(short_boxes, i)
+            top = box.get_top(tbox)
+            bottom = box.get_bottom(tbox)
+            if trigger_high > bottom and box.get_left(tbox) + box_test_delay < bar_index and box_test_sv
+                if box_hide_gray
+                    box.set_bgcolor(tbox, #00000000)
+                    box.set_border_color(tbox, #00000000)
+                else
+                    box.set_bgcolor(tbox, color.rgb(192, 192, 192, 80))
+                    box.set_border_color(tbox, color.rgb(192, 192, 192, 80))
+            if trigger_high > top and box.get_left(tbox) + box_fill_delay < bar_index
+                if box_stop_sv
+                    box.set_right(tbox, bar_index)
+                    box.set_extend(tbox, extend.none)
+                    array.remove(short_boxes, i)
+    if array.size(long_boxes) > 0
+        for i = array.size(long_boxes) - 1 to 0 by 1
+            lbox = array.get(long_boxes, i)
+            top = box.get_top(lbox)
+            bottom = box.get_bottom(lbox)
+            if trigger_low < top and box.get_left(lbox) + box_test_delay < bar_index and box_test_sv
+                if box_hide_gray
+                    box.set_bgcolor(lbox, #00000000)
+                    box.set_border_color(lbox, #00000000)
+                else
+                    box.set_bgcolor(lbox, color.rgb(192, 192, 192, 80))
+                    box.set_border_color(lbox, color.rgb(192, 192, 192, 80))
+            if trigger_low < bottom and box.get_left(lbox) + box_fill_delay < bar_index
+                if box_stop_sv
+                    box.set_right(lbox, bar_index)
+                    box.set_extend(lbox, extend.none)
+                    array.remove(long_boxes, i)
+
+//======================================================================================================================
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=5
+//indicator(title='Twin Range Filter', overlay=true, timeframe='')
+source = input(defval=close, title='Source')
+showsignals = input(title='Show Buy/Sell Signals ?', defval=true)
+per1 = input.int(defval=27, minval=1, title='Fast period')
+mult1 = input.float(defval=1.6, minval=0.1, title='Fast range')
+per2 = input.int(defval=55, minval=1, title='Slow period')
+mult2 = input.float(defval=2, minval=0.1, title='Slow range')
+smoothrng(x, t, m) =>
+    wper = t * 2 - 1
+    avrng = ta.ema(math.abs(x - x[1]), t)
+    smoothrng = ta.ema(avrng, wper) * m
+    smoothrng
+smrng1 = smoothrng(source, per1, mult1)
+smrng2 = smoothrng(source, per2, mult2)
+smrng = (smrng1 + smrng2) / 2
+rngfilt(x, r) =>
+    rngfilt = x
+    rngfilt := x > nz(rngfilt[1]) ? x - r < nz(rngfilt[1]) ? nz(rngfilt[1]) : x - r : x + r > nz(rngfilt[1]) ? nz(rngfilt[1]) : x + r
+    rngfilt
+filt = rngfilt(source, smrng)
+upward = 0.0
+upward := filt > filt[1] ? nz(upward[1]) + 1 : filt < filt[1] ? 0 : nz(upward[1])
+downward = 0.0
+downward := filt < filt[1] ? nz(downward[1]) + 1 : filt > filt[1] ? 0 : nz(downward[1])
+STR = filt + smrng
+STS = filt - smrng
+FUB = 0.0
+FUB := STR < nz(FUB[1]) or close[1] > nz(FUB[1]) ? STR : nz(FUB[1])
+FLB = 0.0
+FLB := STS > nz(FLB[1]) or close[1] < nz(FLB[1]) ? STS : nz(FLB[1])
+TRF = 0.0
+TRF := nz(TRF[1]) == FUB[1] and close <= FUB ? FUB : nz(TRF[1]) == FUB[1] and close >= FUB ? FLB : nz(TRF[1]) == FLB[1] and close >= FLB ? FLB : nz(TRF[1]) == FLB[1] and close <= FLB ? FUB : FUB
+long = ta.crossover(close, TRF)
+short = ta.crossunder(close, TRF)
+plotshape(showsignals and long, title='Long', text='BUY', style=shape.labelup, textcolor=color.white, size=size.tiny, location=location.belowbar, color=color.rgb(0, 19, 230),force_overlay=true)
+plotshape(showsignals and short, title='Short', text='SELL', style=shape.labeldown, textcolor=color.white, size=size.tiny, location=location.abovebar, color=color.rgb(0, 19, 230),force_overlay=true)
+alertcondition(long, title='Long', message='Long')
+alertcondition(short, title='Short', message='Short')
+Trfff = plot(TRF,force_overlay=true)
+mPlot = plot(ohlc4, title='', style=plot.style_circles, linewidth=0,force_overlay=true)
+longFillColor = close > TRF ? color.green : na
+shortFillColor = close < TRF ? color.red : na
+fill(mPlot, Trfff, title='UpTrend Highligter', color=longFillColor, transp=90)
+fill(mPlot, Trfff, title='DownTrend Highligter', color=shortFillColor, transp=90)
+
+//========================================================================================
+
+// Input settings
+stochLength = input.int(14, title="Stochastic RSI Length", minval=1)
+stochSmoothing = input.int(3, title="Stochastic Smoothing (Slow K)", minval=1)
+rsiLength = input.int(14, title="RSI Length", minval=1)
+macdLengthFast = input.int(12, title="MACD Fast Length", minval=1)
+macdLengthSlow = input.int(26, title="MACD Slow Length", minval=1)
+macdSignalLength = input.int(9, title="MACD Signal Length", minval=1)
+stochOverbought = input.float(90, title="Stoch RSI Overbought Level", minval=0, maxval=100)
+stochOversold = input.float(10, title="Stoch RSI Oversold Level", minval=0, maxval=100)
+rsiOverbought = input.float(70, title="RSI Overbought Level", minval=0, maxval=100)
+rsiNeutral = input.float(50, title="RSI Neutral Level", minval=0, maxval=100)
+rsiOversold = input.float(35, title="RSI Oversold Level", minval=0, maxval=100)
+
+// User-defined colors for signals
+buyColorGreen = input.color(color.green, title="Buy Signal - RSI <= 35")
+buyColorBlue = input.color(color.blue, title="Buy Signal - RSI > 35")
+sellColorRed = input.color(color.red, title="Sell Signal - RSI >= 70")
+sellColorOrange = input.color(color.orange, title="Sell Signal - RSI < 70")
+
+// Condition toggles
+enableStochCondition = input.bool(true, title="Enable Stochastic RSI Condition")
+enableRSICondition = input.bool(true, title="Enable RSI Condition")
+enableMACDCondition = input.bool(true, title="Enable MACD Trend Condition")
+enableCandleColorCondition = input.bool(true, title="Enable Candle Color Condition")
+
+// Calculating RSI
+rsi = ta.rsi(close, rsiLength)
+
+// Calculating Stochastic RSI
+stochRsiK = ta.stoch(rsi, rsi, rsi, stochLength)           // Fast K (Stochastic RSI)
+stochRsiD = ta.sma(stochRsiK, stochSmoothing)              // Slow D (smoothed K line)
+
+// Calculating MACD
+[macdLine, signalLine, _] = ta.macd(close, macdLengthFast, macdLengthSlow, macdSignalLength)
+
+// Check for 3 consecutive bars decreasing (negative) in MACD
+macdDecreasing = macdLine < 0 and macdLine < macdLine[1] and macdLine[1] < macdLine[2] and macdLine[2] < macdLine[3]
+
+// Check for 3 consecutive bars increasing (positive) in MACD
+macdIncreasing = macdLine > 0 and macdLine > macdLine[1] and macdLine[1] > macdLine[2] and macdLine[2] > macdLine[3]
+
+// Buy and sell conditions based on enabled toggles
+buyConditionMet = (enableStochCondition ? (stochRsiK < stochOversold) : true) and 
+                  (enableRSICondition ? (rsi < rsiNeutral or rsi < rsiOversold) : true) and 
+                  (enableMACDCondition ? macdDecreasing : true)
+
+sellConditionMet = (enableStochCondition ? (stochRsiK > stochOverbought) : true) and 
+                   (enableRSICondition ? (rsi > rsiNeutral or rsi > rsiOverbought) : true) and 
+                   (enableMACDCondition ? macdIncreasing : true)
+
+// Flags to track conditions met in the previous candle
+var bool buyFlag = false
+var bool sellFlag = false
+
+// Track previous RSI value if conditions are met on the correct-colored candle
+var float previousRsiValue = na
+
+// Update flags and store RSI only if conditions are met on a candle with the right color
+if (buyConditionMet and (enableCandleColorCondition ? close < open : true))  // Buy condition on a red (down) candle
+    buyFlag := true
+    previousRsiValue := rsi  // Store the RSI value for the label
+
+if (sellConditionMet and (enableCandleColorCondition ? close > open : true))  // Sell condition on a green (up) candle
+    sellFlag := true
+    previousRsiValue := rsi  // Store the RSI value for the label
+
+// Determine colors for buy/sell signals based on RSI level
+buyColor = (previousRsiValue <= 35) ? buyColorGreen : buyColorBlue
+sellColor = (previousRsiValue >= 70) ? sellColorRed : sellColorOrange
+
+// Signals with flag and candle color checks
+buySignal = buyFlag and (enableCandleColorCondition ? close > open : true)
+sellSignal = sellFlag and (enableCandleColorCondition ? close < open : true)
+
+// Reset flags after signals are triggered
+if (buySignal)
+    buyFlag := false
+if (sellSignal)
+    sellFlag := false
+
+// Alerts
+alertcondition(buySignal, title="Buy Alert", message="Buy signal generated!")
+alertcondition(sellSignal, title="Sell Alert", message="Sell signal generated!")
+
+// User input to toggle buy/sell signals visibility
+showSignals = input(true, title="Show Buy/Sell Signals")
+
+// Plotting buy/sell signals based on user input with previous RSI value in the text
+if (showSignals and buySignal)
+    label.new(bar_index, low, "BUY (" + str.tostring(math.floor(previousRsiValue)) + ")", color=buyColor, style=label.style_label_up, textcolor=color.white, size=size.small,force_overlay=true)
+
+if (showSignals and sellSignal)
+    label.new(bar_index, high, "SELL (" + str.tostring(math.floor(previousRsiValue)) + ")", color=sellColor, style=label.style_label_down, textcolor=color.white, size=size.small,force_overlay=true)

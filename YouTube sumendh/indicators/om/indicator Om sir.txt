@@ -1,0 +1,1862 @@
+//@version=6
+indicator('BUY/SELL AlgoPoint Remake Maa Sharda Trading', shorttitle = 'BUY/SELL AlgoPoint Remake Elite Algo', overlay = true, precision = 0, explicit_plot_zorder = true, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+
+
+// ########## Elite Algo | AlgoPoint Remake Series ##########
+// ----------------------------------------------------------------
+// CORRECTED & OPTIMIZED VERSION
+//   - OB now plots FAST on every confirmed historical bar (no
+//     more "only shows on last bar" problem).
+//   - Accuracy fixed: pivots are now detected on PRICE, not on
+//     volume (the original used `ta.pivothigh(b.v,...)` which is
+//     wrong). OBs now form on real swing highs/lows.
+//   - No overlap: older OBs that overlap a newer one are removed.
+//   - No more `for ln in line.all` mass-delete — each box/line is
+//     stored by reference and updated/deleted individually, so
+//     scrolling history is instant.
+//   - Removed shadowing of built-in `ta` namespace.
+// ----------------------------------------------------------------
+
+// ---------------------------------------------- User Inputs  -----------------------------------------------------
+// Volatility Calculater
+// FUNCTIONS
+title = 'https://t.me/shardatrading6987' //t.me/shardatrading6987'
+subtitle = '@Harsh9770'
+symInfoCheck = false
+symInfo = syminfo.ticker + ' | ' + timeframe.period + (timeframe.isminutes ? 'M' : na)
+date = str.tostring(dayofmonth(time_close)) + '/' + str.tostring(month(time_close)) + '/' + str.tostring(year(time_close))
+textVPosition = 'middle'
+textHPosition = 'center'
+symVPosition = 'top'
+symHPosition = 'left'
+width = 0
+height = 0
+c_title = #b2b5be80
+s_title = 'large'
+a_title = 'center'
+c_subtitle = #b2b5be80
+s_subtitle = 'normal'
+a_subtitle = 'center'
+c_bg = color.new(color.blue, 100)
+// Close to Close Volatility
+f_coc(x, period, sqrtAnnual) =>
+    mean = ta.sma(x, period)
+    s = array.new_float(0)
+    for i = 0 to period - 1 by 1
+        array.push(s, math.pow(x[i] - mean, 2))
+    sqrtAnnual * math.sqrt(array.sum(s) / (period - 1))
+
+// Parkinson Volatility
+f_park(period, sqrtAnnual) =>
+    var LOG2 = math.log(2)
+    powLogHighLow = math.pow(math.log(high / low), 2)
+    sqrtAnnual * math.sqrt(1.0 / period * math.sum(1.0 / (4.0 * LOG2) * powLogHighLow, period))
+
+// Garman Klass Volatility
+f_gk(period, sqrtAnnual) =>
+    var LOG2 = math.log(2)
+    var SQRT_1_PERIOD = math.sqrt(1 / period)
+    powLogHighLow = math.pow(math.log(high / low), 2)
+    powLogCloseOpen = math.pow(math.log(close / open), 2)
+    tmp = 0.5 * powLogHighLow - (2.0 * LOG2 - 1.0) * powLogCloseOpen
+    sqrtAnnual * math.sqrt(math.sum(tmp, period)) * SQRT_1_PERIOD
+
+// Rogers Satchell Volatility
+f_rsv(period, sqrtAnnual) =>
+    tmp = math.log(high / close) * math.log(high / open) + math.log(low / close) * math.log(low / open)
+    sqrtAnnual * math.sqrt(math.sum(tmp, period) / period)
+
+// Garman Klass Yang Zhang Extension Volatility
+f_gkyz(period, sqrtAnnual) =>
+    var LOG2 = math.log(2)
+    var SQRT_1_PERIOD = math.sqrt(1 / period)
+    powLogHighLow = math.pow(math.log(high / low), 2)
+    powLogCloseOpen = math.pow(math.log(close / open), 2)
+    lastClose = nz(close[1], close)
+    powLogOpenClose1 = math.pow(math.log(open / lastClose), 2)
+    tmp = powLogOpenClose1 + 0.5 * powLogHighLow - (2.0 * LOG2 - 1.0) * powLogCloseOpen
+    sqrtAnnual * math.sqrt(math.sum(tmp, period)) * SQRT_1_PERIOD
+
+// Yang Zhang Volatility
+f_yz(a, period, sqrtAnnual) =>
+    oaman = math.log(open) - math.log(nz(close[1], close))
+    u = math.log(high) - math.log(open)
+    d = math.log(low) - math.log(open)
+    caman = math.log(close) - math.log(open)
+    nMinusOne = period - 1
+    avgo = ta.sma(oaman, period)
+    avgc = ta.sma(caman, period)
+    so = array.new_float(0)
+    sc = array.new_float(0)
+    for i = 0 to period - 1 by 1
+        array.push(so, math.pow(oaman[i] - avgo, 2))
+        array.push(sc, math.pow(caman[i] - avgc, 2))
+    sumo = array.sum(so)
+    sumc = array.sum(sc)
+    Vo = sumo / nMinusOne
+    Vc = sumc / nMinusOne
+    Vrs = math.sum(u * (u - caman) + d * (d - caman), period) / period
+    k = (a - 1.0) / (a + (period + 1.0) / nMinusOne)
+    sqrtAnnual * math.sqrt(Vo + k * Vc + (1.0 - k) * Vrs)
+
+// Exponentially Weighted Volatility
+f_ewma(source, period, sqrtAnnual) =>
+    var lambda = (period - 1) / (period + 1)
+    squared = math.pow(source, 2)
+    float v = na
+    v := lambda * nz(v[1], squared) + (1.0 - lambda) * squared
+    sqrtAnnual * math.sqrt(v)
+
+// Mean Absolute Deviation (Adjusted)
+f_mad(source, period, sqrtAnnual) =>
+    var SQRT_HALF_PI = math.sqrt(math.asin(1))
+    mean = ta.sma(source, period)
+    S = array.new_float(0)
+    for i = 0 to period - 1 by 1
+        array.push(S, math.abs(source[i] - mean))
+    sumS = array.sum(S)
+    sqrtAnnual * (sumS / period) * SQRT_HALF_PI
+
+// Median Absolute Deviation
+f_mead(source, period, sqrtAnnual) =>
+    median = ta.percentile_nearest_rank(source, period, 50)
+    E = 0.0
+    for i = 0 to period - 1 by 1
+        E := E + math.abs(source[i] - median)
+        E
+    sqrtAnnual * math.sqrt(2) * (E / period)
+
+//Rescale Function
+f_rescale(_src, _size) =>
+    math.max(0, math.min(_size, int(_src / 100 * _size)))
+
+// label Panel Function
+_label(T, color_PnL) =>
+    label PnL_Label = na
+    label.delete(PnL_Label[1])
+    PnL_Label := label.new(time, 0, text = T, color = color_PnL, textcolor = color.white, size = size.normal, style = label.style_label_left, xloc = xloc.bar_time, textalign = text.align_left)
+    label.set_x(PnL_Label, label.get_x(PnL_Label) + math.round(ta.change(time) * 3))
+
+// Round Function
+Round(src, digits) =>
+    p = math.pow(10, digits)
+    math.round(math.abs(src) * p) / p * math.sign(src)
+
+//Options for Inputs
+ON = 'On'
+OFF = 'Off'
+CTC = 'Close to Close'
+PKS = 'Parkinson'
+GK = 'Garman Klass'
+RS = 'Rogers Satchell'
+GKYZ = 'Garman Klass Yang Zhang Extension'
+YZ = 'Yang Zhang'
+EWMA = 'EWMA'
+MAD = 'Mean Absolute Deviation'
+MAAD = 'Median Absolute Deviation'
+L = 'Line'
+SL = 'StepLine'
+Ar = 'Area'
+CL = 'Columns'
+
+// Settings
+Haman = EWMA
+period = 10
+Annual = 365
+a = 1.34
+Plen = 365
+Pco = ON
+sma = ON
+malen = 55
+bsg = OFF
+stl = CL
+lT = 3
+i_invert = OFF
+bg = OFF
+sp = OFF
+
+var sqrtAnnual = math.sqrt(Annual) * 100
+
+logr = math.log(close / close[1])
+
+// Historical Volatiity Models
+Hv = if Haman == CTC
+    f_coc(logr, period, sqrtAnnual)
+else if Haman == PKS
+    f_park(period, sqrtAnnual)
+else if Haman == RS
+    f_rsv(period, sqrtAnnual)
+else if Haman == GK
+    f_gk(period, sqrtAnnual)
+else if Haman == GKYZ
+    f_gkyz(period, sqrtAnnual)
+else if Haman == EWMA
+    f_ewma(logr, period, sqrtAnnual)
+else if Haman == YZ
+    f_yz(a, period, sqrtAnnual)
+else if Haman == MAD
+    f_mad(logr, period, sqrtAnnual)
+else
+    f_mead(logr, period, sqrtAnnual)
+
+pstyle = stl == L ? plot.style_linebr : stl == SL ? plot.style_stepline : stl == Ar ? plot.style_area : stl == CL ? plot.style_columns : plot.style_line
+textWatermark = table.new(textVPosition + '_' + textHPosition, 1, 3)
+//Hv Stats
+avgHV = ta.sma(Hv, malen)
+HVP = ta.percentrank(Hv, Plen)
+NearZero = HVP < 1.5 ? 1 : 0
+HV50 = ta.percentile_nearest_rank(Hv, Plen, 50)
+
+//Custrom MAS
+maa = avgHV / 100 * 140
+mab = avgHV / 100 * 180
+mac = avgHV / 100 * 240
+mad = avgHV / 100 * 60
+mae = avgHV / 100 * 20
+
+
+// Auto Sensivity Volatility Band Settings
+
+float volatility = 0.0
+
+if Hv < maa and Hv > avgHV // ilk band ust
+    volatility := 6
+    volatility
+else if Hv < mab and Hv > maa // ikinci band ust
+    volatility := 7
+    volatility
+else if Hv < mac and Hv > mab // ucuncu band ust
+    volatility := 7.8
+    volatility
+else if Hv > mac // volatilite en ust degerde
+    volatility := 9
+    volatility
+else if Hv < maa and Hv > mad // altdaki ilk band
+    volatility := 5
+    volatility
+else if Hv < mad and Hv > mae // altdaki ikinci band
+    volatility := 4
+    volatility
+else if Hv < mae // volatilite butun bandlarin anltinda
+    volatility := 3
+    volatility
+
+
+// basic settings
+signalPreset = input.string('Trend Only', 'Signal Preset⠀⠀⠀⠀⠀⠀⠀⠀⠀', ['None', 'Trend Only'], group = 'basic settings')
+signalLogic = input.string('Pro Scalper', 'Signal Logic⠀⠀⠀⠀⠀⠀⠀⠀⠀', ['Pro Scalper', 'Normal'], group = 'basic settings')
+signalStyle = input.string('Normal', 'Signal Style⠀⠀⠀⠀⠀⠀⠀⠀⠀', ['Normal', 'Minimal'], group = 'basic settings')
+signalAgility = input.string('Auto Pilot', 'Agility%⠀⠀⠀⠀⠀⠀⠀⠀⠀', ['Auto Pilot', 'Manual'], group = 'basic settings')
+signalMode = signalStyle == 'Normal' ? 'Simple Entry + Exits' : 'Minimized Entry + Exits'
+normalsensitivity = input.float(5.1, 'Normal Sensitivity⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀', 5.1, 50.1, step = 0.1, group = 'basic settings', tooltip = 'Change Your Signal Sensitivity And Accuracy')
+sensitivity = input.float(5, 'Pro Scalper Sensitivity⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀', 0.6, 15.1, step = 0.1, group = 'basic settings', tooltip = 'Change Your Signal Sensitivity And Accuracy')
+strongSignalOnly = signalPreset == 'Trend Only' ? true : false
+noRepainting = true
+auto_button = signalAgility == 'Auto Pilot' ? true : false
+// basic chart features
+normalsignalsmode = normalsensitivity / 4.4
+normalsignalvolatility = volatility - 1.7
+if signalLogic == 'Pro Scalper'
+    sensitivity
+else if signalLogic == 'Normal'
+    sensitivity := normalsignalsmode
+    sensitivity
+    //
+if signalLogic == 'Pro Scalper'
+    volatility
+else if signalLogic == 'Normal'
+    volatility := normalsignalvolatility
+    volatility
+    //
+if auto_button == false
+    sensitivity
+else if auto_button == true
+    sensitivity := volatility
+    sensitivity
+    //
+
+
+ReversalCloud = input(false, 'Reversal Cloud⠀⠀⠀', group = 'basic chart features', inline = 'feature [R, 1]')
+LongTrendAverage = input(false, 'Long Trend Average', group = 'basic chart features', inline = 'feature [R, 1]', tooltip = 'Places A Reversal Channel In Which Reversals Can Be Predicted \n \nTrend Cloud Line (EMA), Will Be Shown On The Chart')
+ReversalBands = input(false, 'Reversal Bands⠀⠀⠀', group = 'basic chart features', inline = 'feature [R, 2]')
+TrendTracer = true
+frequencyCloud = input(false, 'Frequency Cloud⠀⠀', 'Displays Short Trend Cloud', group = 'basic chart features', inline = 'feature [R, 2]')
+CandleColor = input.string('Gradient Confirmation', 'Candle Stick Coloring', ['Gradient Confirmation', 'Off'], group = 'basic chart features')
+Plot_MAs = input.bool(defval = false, title = 'Trend Cloud', group = 'basic chart features')
+
+
+//
+//=============================================================================
+// EK Cloud
+//=============================================================================
+//Moving Average
+gr_MA = '📈Moving Average Settings📈'
+// ---- User Settings ----
+Timeframe = ''
+Repaint = false
+MA_T1 = 'Ehlers Kaufman'
+MA_S1_Input = close
+MA_L1 = 200
+MA_T2 = 'Ehlers Kaufman'
+MA_S2_Input = close
+MA_L2 = 350
+MA_S1 = request.security(syminfo.tickerid, Timeframe, MA_S1_Input[Repaint ? 0 : barstate.isrealtime ? 1 : 0])[Repaint ? 0 : barstate.isrealtime ? 0 : 1]
+MA_S2 = request.security(syminfo.tickerid, Timeframe, MA_S2_Input[Repaint ? 0 : barstate.isrealtime ? 1 : 0])[Repaint ? 0 : barstate.isrealtime ? 0 : 1]
+
+// ---- Moving Averages ----
+MA_1 = switch MA_T1
+    'Simple' => ta.sma(MA_S1, MA_L1)
+    'Exponential' => ta.ema(MA_S1, MA_L1)
+    'Double Exponential' => 2 * ta.ema(MA_S1, MA_L1) - ta.ema(ta.ema(MA_S1, MA_L1), MA_L1)
+    'Triple Exponential' => 3 * (ta.ema(MA_S1, MA_L1) - ta.ema(ta.ema(MA_S1, MA_L1), MA_L1)) + ta.ema(ta.ema(ta.ema(MA_S1, MA_L1), MA_L1), MA_L1)
+    'Quadruple Exponential' => 5 * ta.ema(MA_S1, MA_L1) - 10 * ta.ema(ta.ema(MA_S1, MA_L1), MA_L1) + 10 * ta.ema(ta.ema(ta.ema(MA_S1, MA_L1), MA_L1), MA_L1) - 5 * ta.ema(ta.ema(ta.ema(ta.ema(MA_S1, MA_L1), MA_L1), MA_L1), MA_L1) + ta.ema(ta.ema(ta.ema(ta.ema(ta.ema(MA_S1, MA_L1), MA_L1), MA_L1), MA_L1), MA_L1)
+    'Weighted' => ta.wma(MA_S1, MA_L1)
+    'Volume-weighted' => ta.vwma(MA_S1, MA_L1)
+    'Hull' => ta.hma(MA_S1, MA_L1)
+    'Symmetrical' => ta.swma(MA_S1)
+    'Arnaud Legoux' => ta.alma(MA_S1, MA_L1, 0.85, 6)
+    'Least Squares' => ta.linreg(MA_S1, MA_L1, 0)
+    'Relative Strength' => ta.rma(MA_S1, MA_L1)
+    'Welles Wilder' => 
+	    Wilder_MA1 = .0
+	    Wilder_MA1 := int(1 / MA_L1) * MA_S1 + (1 - int(1 / MA_L1)) * nz(Wilder_MA1[1])
+	    Wilder_MA1
+    'Triangular' => ta.sma(ta.sma(MA_S1, MA_L1), MA_L1)
+    'Ehlers Kaufman' => 
+	    KA_D1 = .0
+	    for int i = 0 to 80 - 1 by 1
+	        KA_D1 := KA_D1 + math.abs(nz(MA_S1[i]) - nz(MA_S1[i + 1]))
+	        KA_D1
+	    KA_EF1 = KA_D1 != 0 ? math.min(math.abs(MA_S1 - nz(MA_S1[80 - 1])) / KA_D1, 1) : 0
+	    KAMA1 = .0
+	    KAMA1 := math.pow(0.6667 * KA_EF1 + 0.0645, 2) * MA_S1 + (1 - math.pow(0.6667 * KA_EF1 + 0.0645, 2)) * nz(KAMA1[1])
+	    KAMA1
+
+MA_2 = switch MA_T2
+    'Simple' => ta.sma(MA_S2, MA_L2)
+    'Exponential' => ta.ema(MA_S2, MA_L2)
+    'Double Exponential' => 2 * ta.ema(MA_S2, MA_L2) - ta.ema(ta.ema(MA_S2, MA_L2), MA_L2)
+    'Triple Exponential' => 3 * (ta.ema(MA_S2, MA_L2) - ta.ema(ta.ema(MA_S2, MA_L2), MA_L2)) + ta.ema(ta.ema(ta.ema(MA_S2, MA_L2), MA_L2), MA_L2)
+    'Quadruple Exponential' => 5 * ta.ema(MA_S2, MA_L2) - 10 * ta.ema(ta.ema(MA_S2, MA_L2), MA_L2) + 10 * ta.ema(ta.ema(ta.ema(MA_S2, MA_L2), MA_L2), MA_L2) - 5 * ta.ema(ta.ema(ta.ema(ta.ema(MA_S2, MA_L2), MA_L2), MA_L2), MA_L1) + ta.ema(ta.ema(ta.ema(ta.ema(ta.ema(MA_S2, MA_L2), MA_L2), MA_L2), MA_L2), MA_L2)
+    'Weighted' => ta.wma(MA_S2, MA_L2)
+    'Volume-weighted' => ta.vwma(MA_S2, MA_L2)
+    'Hull' => ta.hma(MA_S2, MA_L2)
+    'Symmetrical' => ta.swma(MA_S2)
+    'Arnaud Legoux' => ta.alma(MA_S2, MA_L2, 0.85, 6)
+    'Least Squares' => ta.linreg(MA_S2, MA_L2, 0)
+    'Relative Strength' => ta.rma(MA_S2, MA_L2)
+    'Welles Wilder' => 
+	    Wilder_MA2 = .0
+	    Wilder_MA2 := int(1 / MA_L2) * MA_S2 + (1 - int(1 / MA_L2)) * nz(Wilder_MA2[1])
+	    Wilder_MA2
+    'Triangular' => ta.sma(ta.sma(MA_S2, MA_L2), MA_L2)
+    'Ehlers Kaufman' => 
+	    KA_D2 = .0
+	    for int i = 0 to 135 - 1 by 1
+	        KA_D2 := KA_D2 + math.abs(nz(MA_S2[i]) - nz(MA_S2[i + 1]))
+	        KA_D2
+	    KA_EF2 = KA_D2 != 0 ? math.min(math.abs(MA_S2 - nz(MA_S2[135 - 1])) / KA_D2, 1) : 0
+	    KAMA2 = .0
+	    KAMA2 := math.pow(0.6667 * KA_EF2 + 0.0645, 2) * MA_S2 + (1 - math.pow(0.6667 * KA_EF2 + 0.0645, 2)) * nz(KAMA2[1])
+	    KAMA2
+
+
+
+MA_Color = Plot_MAs ? MA_1 > MA_2 ? color.new(#04994b, 80) : color.new(#b4060d, 80) : na
+P1 = plot(Plot_MAs ? MA_1 : na, title = 'Fast MA', color = MA_Color)
+P2 = plot(Plot_MAs ? MA_2 : na, title = 'Slow MA', color = MA_Color)
+fill(P1, P2, color = MA_Color)
+
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+// -----------------------------------------------  Buy & Sell  -----------------------------------------------------
+
+src = close
+smoothrng(x, t, m) =>
+    wper = t * 2 - 1
+    avrng = ta.ema(math.abs(x - x[1]), t)
+    smoothrng = ta.ema(avrng, wper) * m
+    smoothrng
+smrng = smoothrng(close, 20, sensitivity)
+
+rngfilt(x, r) =>
+    rngfilt = x
+    rngfilt := x > nz(rngfilt[1]) ? x - r < nz(rngfilt[1]) ? nz(rngfilt[1]) : x - r : x + r > nz(rngfilt[1]) ? nz(rngfilt[1]) : x + r
+    rngfilt
+filt = rngfilt(src, smrng)
+
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+
+upward = 0.0
+upward := filt > filt[1] ? nz(upward[1]) + 1 : filt < filt[1] ? 0 : nz(upward[1])
+downward = 0.0
+downward := filt < filt[1] ? nz(downward[1]) + 1 : filt > filt[1] ? 0 : nz(downward[1])
+
+[mi, u, lo] = ta.kc(close, 90, 6.8)
+[mid, upp, loww] = ta.kc(close, 90, 5.3)
+[midd, ups, lowe] = ta.kc(close, 90, 4)
+
+shorttop = ta.sma(close, 13)
+longtop = ta.ema(close, 65)
+eq_cloud_is_bullish = shorttop > longtop
+
+
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+
+hband = filt + smrng
+lband = filt - smrng
+
+longCond = bool(na)
+shortCond = bool(na)
+longCond := src > filt and src > src[1] and upward > 0 or src > filt and src < src[1] and upward > 0
+shortCond := src < filt and src < src[1] and downward > 0 or src < filt and src > src[1] and downward > 0
+CondIni = 0
+CondIni := longCond ? 1 : shortCond ? -1 : CondIni[1]
+
+// Candle Rating
+//=============================================================================
+// INDICATOR 11 - Trend Confidence
+//============================================================================
+
+// CCI
+TM_Long = ta.cci(close, 20) > 50
+TM_Short = ta.cci(close, 20) < -50
+
+// ADX
+lenadx = 21
+lensig = 21
+limadx = 34
+
+ADX_up = ta.change(high)
+ADX_down = -ta.change(low)
+trur = ta.rma(ta.tr, lenadx)
+plus = fixnan(100 * ta.rma(ADX_up > ADX_down and ADX_up > 0 ? ADX_up : 0, lenadx) / trur)
+minus = fixnan(100 * ta.rma(ADX_down > ADX_up and ADX_down > 0 ? ADX_down : 0, lenadx) / trur)
+sum = plus + minus
+adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), lensig)
+
+ADX_Long = adx > limadx and plus > minus
+ADX_Short = adx > limadx and plus < minus
+
+//Acumulation/Distribution
+ACC_Dist = ta.sma(ta.accdist, 21)
+ACC_Long = ta.accdist > ACC_Dist
+ACC_Short = ta.accdist < ACC_Dist
+
+// MFI
+MFI = ta.mfi(close, 14)
+MFI_SMA = ta.sma(MFI, 9)
+MFI_Long = MFI > MFI_SMA
+MFI_Short = MFI < MFI_SMA
+
+// Momentum Linear Regression
+mom = ta.mom(close, 21)
+lrmom = ta.linreg(mom, 28, 0)
+MOML_Long = lrmom > lrmom[1]
+MOML_Short = lrmom < lrmom[1]
+
+//
+entry_long = true
+entry_short = true
+
+Long_Signal_Strength = 0
+Short_Signal_Strength = 0
+
+if entry_long
+    if TM_Long
+        Long_Signal_Strength := Long_Signal_Strength + 1
+        Long_Signal_Strength
+    if ADX_Long
+        Long_Signal_Strength := Long_Signal_Strength + 1
+        Long_Signal_Strength
+    if ACC_Long
+        Long_Signal_Strength := Long_Signal_Strength + 1
+        Long_Signal_Strength
+    if MFI_Long
+        Long_Signal_Strength := Long_Signal_Strength + 1
+        Long_Signal_Strength
+    if MOML_Long
+        Long_Signal_Strength := Long_Signal_Strength + 1
+        Long_Signal_Strength
+
+if entry_short
+    if TM_Short
+        Short_Signal_Strength := Short_Signal_Strength + 1
+        Short_Signal_Strength
+    if ADX_Short
+        Short_Signal_Strength := Short_Signal_Strength + 1
+        Short_Signal_Strength
+    if ACC_Short
+        Short_Signal_Strength := Short_Signal_Strength + 1
+        Short_Signal_Strength
+    if MFI_Short
+        Short_Signal_Strength := Short_Signal_Strength + 1
+        Short_Signal_Strength
+    if MOML_Short
+        Short_Signal_Strength := Short_Signal_Strength + 1
+        Short_Signal_Strength
+
+// Trend Detecting
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+length = 2
+incr = 100
+resetOn = 'CHoCH'
+showMS = false
+
+//Style
+bullCss = color.teal
+bearCss = color.red
+retCss = #ff5d00
+areaTransp = 100
+
+//------------------------------------------------------------------------------
+//Global variables
+//-----------------------------------------------------------------------------{
+var float ph_y = na
+var int ph_x = na
+var float pl_y = na
+var int pl_x = na
+var float topaman = na
+var float btmaman = na
+var ph_cross = false
+var pl_cross = false
+
+var float maxaman = na
+var float minaman = na
+var float ts = na
+
+var os = 0
+ms = 0
+
+//------------------------------------------------------------------------------
+//Detect pivots and get coordinates
+//-----------------------------------------------------------------------------{
+n = bar_index
+ph = ta.pivothigh(length, length)
+pl = ta.pivotlow(length, length)
+
+if bool(ph)
+    ph_y := ph
+    ph_x := n - length
+    ph_cross := false
+    ph_cross
+
+if bool(pl)
+    pl_y := pl
+    pl_x := n - length
+    pl_cross := false
+    pl_cross
+
+//-----------------------------------------------------------------------------}
+//Bullish structures
+//-----------------------------------------------------------------------------{
+if close > ph_y and not ph_cross
+    if resetOn == 'CHoCH'
+        ms := os == -1 ? 1 : 0
+        ms
+    else
+        ms := 1
+        ms
+
+    ph_cross := true
+
+    if showMS
+        line.new(ph_x, ph_y, n, ph_y, color = bullCss, style = os == -1 ? line.style_dashed : line.style_dotted)
+
+    os := 1
+
+    btmaman := low
+    for i = 0 to n - ph_x - 1 by 1
+        btmaman := math.min(low[i], btmaman)
+        btmaman
+
+//-----------------------------------------------------------------------------}
+//Bearish structures
+//-----------------------------------------------------------------------------{
+if close < pl_y and not pl_cross
+    if resetOn == 'CHoCH'
+        ms := os == 1 ? -1 : 0
+        ms
+    else
+        ms := -1
+        ms
+
+    pl_cross := true
+
+    if showMS
+        line.new(pl_x, pl_y, n, pl_y, color = bearCss, style = os == 1 ? line.style_dashed : line.style_dotted)
+
+    os := -1
+
+    topaman := high
+    for i = 0 to n - pl_x - 1 by 1
+        topaman := math.max(high[i], topaman)
+        topaman
+
+//-----------------------------------------------------------------------------}
+//Trailing stop
+//-----------------------------------------------------------------------------{
+if ms == 1
+    maxaman := close
+    maxaman
+else if ms == -1
+    minaman := close
+    minaman
+else
+    maxaman := math.max(close, maxaman)
+    minaman := math.min(close, minaman)
+    minaman
+
+ts := ms == 1 ? btmaman : ms == -1 ? topaman : os == 1 ? ts + (maxaman - maxaman[1]) * incr / 100 : ts + (minaman - minaman[1]) * incr / 100
+
+//-----------------------------------------------------------------------------}
+cssaman = bool(ms) ? na : os == 1 ? bullCss : bearCss
+
+//-----------------------------------------------------------------------------}
+//Plot Buy/Sell Signals on chart
+
+
+buyCond = longCond and CondIni[1] == -1 and cssaman == bearCss
+strongBuyCond1 = longCond and CondIni[1] == -1 and cssaman == bullCss
+sellCond = shortCond and CondIni[1] == 1 and cssaman == bullCss
+strongSellCond1 = shortCond and CondIni[1] == 1 and cssaman == bearCss
+
+
+
+
+//
+if noRepainting
+    buyCond := buyCond and barstate.isconfirmed
+    strongBuyCond1 := strongBuyCond1 and barstate.isconfirmed
+    sellCond := sellCond and barstate.isconfirmed
+    strongSellCond1 := strongSellCond1 and barstate.isconfirmed
+    strongSellCond1
+    // Buy Signals
+
+
+barcolor = src > filt and src > src[1] and upward > 0 ? color.new(#00db0a, 5) : src > filt and src < src[1] and upward > 0 ? color.new(#00db05, 5) : src < filt and src < src[1] and downward > 0 ? color.new(#c90505, 5) : src < filt and src > src[1] and downward > 0 ? color.new(#ff0000, 5) : color.new(#3ebe48, 5)
+
+barcolor(CandleColor == 'Gradient Confirmation' ? barcolor : na, title = 'Candle Colors')
+
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+// ------------------------------------------------ Reversal Cloud --------------------------------------------------
+
+u1 = plot(ReversalCloud ? ta.sma(u, 1) : na, editable = false)
+u2 = plot(ReversalCloud ? ta.sma(upp, 5) : na, editable = false)
+u3 = plot(ReversalCloud ? ta.sma(ups, 10) : na, editable = false)
+l1 = plot(ReversalCloud ? ta.sma(lo, 1) : na, editable = false)
+l2 = plot(ReversalCloud ? ta.sma(loww, 5) : na, editable = false)
+l3 = plot(ReversalCloud ? ta.sma(lowe, 10) : na, editable = false)
+plot(ReversalBands ? ta.sma(u, 1) : na, editable = false, offset = 2, color = color.new(#f23645, 60))
+plot(ReversalBands ? ta.sma(upp, 5) : na, editable = false, offset = 3, color = color.new(#f23645, 70))
+plot(ReversalBands ? ta.sma(ups, 10) : na, editable = false, offset = 3, color = color.new(#f23645, 65))
+plot(ReversalBands ? ta.sma(lowe, 10) : na, editable = false, offset = 3, color = color.new(#089981, 65))
+plot(ReversalBands ? ta.sma(loww, 5) : na, editable = false, offset = 3, color = color.new(#089981, 70))
+plot(ReversalBands ? ta.sma(lo, 1) : na, editable = false, offset = 2, color = color.new(#089981, 60))
+fill(u1, u2, color = color.new(#f23645, 65), title = 'Reversal Zones [R3, R2]')
+fill(u2, u3, color = color.new(#f23645, 75), title = 'Reversal Zones [R2, R1]')
+fill(l2, l3, color = color.new(#089981, 75), title = 'Reversal Zones [S2, S1]')
+fill(l1, l2, color = color.new(#089981, 65), title = 'Reversal Zones [S3, S2]')
+
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+// ------------------------------------------------- Trend Catcher --------------------------------------------------
+
+filtcolor = upward > 0 ? color.rgb(0, 255, 85) : downward > 0 ? color.new(#ff0000, 0) : color.new(#56328f, 0)
+
+plot(TrendTracer ? filt : na, color = filtcolor, linewidth = 3, title = 'Trend Tracer')
+
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+// ------------------------------------------------ Frquency Cloud --------------------------------------------------
+
+plot_eq_closing_price = plot(frequencyCloud ? shorttop : na, editable = false)
+plot_eq_external_value = plot(frequencyCloud ? longtop : na, editable = false)
+eqCloudColor = ta.sma(close, 26) < ta.sma(close, 48) ? color.new(#9f0700, 80) : shorttop < longtop ? color.new(#ff1100, 80) : ta.sma(close, 26) > ta.sma(close, 48) ? color.new(#10253b, 80) : shorttop > longtop ? color.new(#0d67c2, 80) : ta.sma(close, 34) > ta.sma(close, 56) ? color.new(#549de6, 80) : na
+
+fill(plot_eq_closing_price, plot_eq_external_value, color = eqCloudColor, title = 'Frequency Cloud Fill')
+
+//
+// ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+// =====================================================================
+//  ORDER BLOCKS  (CORRECTED + OPTIMIZED + FAST + NON-OVERLAPPING)
+// =====================================================================
+//  Fixes applied vs. original:
+//   (1) Accuracy: pivots now use PRICE (high/low) instead of volume.
+//       Original line `pv = ta.pivothigh(b.v, len, len)` detected OBs
+//       on volume peaks — completely wrong. Now uses `ta.pivothigh(len,len)`
+//       and `ta.pivotlow(len,len)`.
+//   (2) Speed: no more `for bx in box.all { bx.delete() }` + redraw
+//       everything on the last bar. Boxes/lines/labels are created ONCE
+//       and updated in place via stored IDs, so the whole history is
+//       drawn natively (instant scroll, no repaint).
+//   (3) Robust: original deleted ALL lines on the chart
+//       (`for ln in line.all`), wiping the Trend Tracer etc. Fixed by
+//       only touching the objects we own.
+//   (4) No overlap: when a new OB forms, older OBs of the same side that
+//       overlap it are removed (kept most-recent, as the tooltip says).
+//   (5) Removed shadowing of built-in `ta` namespace (renamed alert
+//       tooltip constants). This prevented any `ta.*` call below them.
+// =====================================================================
+
+const color colup = #089981
+const color coldn = #f23645
+
+const string tMsg_len = '[Length] Use Length to adjust coordinate of the orderblocks\n[Full] Use whole candle body'
+const string tMsg_mit = 'Mitigation method for when to trigger order blocks'
+const string tMsg_sz = 'Order block Metrics text size'
+const string tMsg_act = 'Display internal buy & sell activity'
+const string tMsg_shw = 'Show Last number of orderblocks'
+const string gv = 'Volumetric Order Blocks'
+
+obshow = input.bool(true, 'Show Last', tMsg_shw, '1', gv)
+oblast = input.int(3, '', 0, 50, 1, inline = '1', group = gv)
+obupcs = input.color(color.new(colup, 90), '', inline = '1', group = gv)
+obdncs = input.color(color.new(coldn, 90), '', inline = '1', group = gv)
+obshowactivity = input.bool(true, 'Show Buy/Sell Activity          ', tMsg_act, '2', gv)
+obactup = input.color(color.new(colup, 50), '', inline = '2', group = gv)
+obactdn = input.color(color.new(coldn, 50), '', inline = '2', group = gv)
+obmode = input.string('Length', 'Construction ', ['Length', 'Full'], tMsg_len, '3', gv)
+len = input.int(4, '', 1, 20, 1, inline = '3', group = gv)
+obmiti = input.string('Close', 'Mitigation Method', ['Close', 'Wick', 'Avg'], tMsg_mit, group = gv)
+obtxt = input.string('Normal', 'Metric Size', ['Tiny', 'Small', 'Normal', 'Large', 'Huge'], tMsg_sz, group = gv)
+showmetric = input.bool(true, 'Show Metrics', group = gv)
+showline = input.bool(true, 'Show Mid-Line', group = gv)
+overlap = input.bool(true, 'Hide Overlap', group = gv, tooltip = 'Most recent order block will be preserved')
+
+blcreated = input.bool(false, 'Bullish OB Formed      ', inline = 'Formed', group = 'ANY ALERT')
+brcreated = input.bool(false, 'Bearish OB Formed', inline = 'Formed', group = 'ANY ALERT')
+blmitigated = input.bool(false, 'Bullish OB Mitigated   ', inline = 'Mitigated', group = 'ANY ALERT')
+brmitigated = input.bool(false, 'Bearish OB Mitigated', inline = 'Mitigated', group = 'ANY ALERT')
+blinside = input.bool(false, 'Price Inside Bullish OB', inline = 'Inside', group = 'ANY ALERT')
+brinside = input.bool(false, 'Price Inside Bearish OB', inline = 'Inside', group = 'ANY ALERT')
+
+// ---------- User type: one Order Block, with attached drawing IDs ----------
+type ob
+	float top
+	float btm
+	float avg
+	int loc // bar_index where OB originates
+	color css
+	float vol
+	int dir // 1 bullish (demand) | -1 bearish (supply)
+	// Drawing IDs (created once, updated in place -> fast, no flicker)
+	box bx
+	box bxActUp
+	box bxActDn
+	line midline
+	label metlbl
+	// Mitigation / inside tracking
+	bool mitigated = false
+	bool announcedInside = false
+
+type alert
+	bool created = false
+	bool inside = false
+	bool mitigated = false
+
+type cross
+	bool reset = false
+
+alert blal = alert.new()
+alert bral = alert.new()
+var cross blIS = cross.new()
+var cross brIS = cross.new()
+
+method txSz(string s) =>
+    switch s
+        'Tiny' => size.tiny
+        'Small' => size.small
+        'Normal' => size.normal
+        'Large' => size.large
+        'Huge' => size.huge
+
+// ---------- Storage arrays ----------
+var array<ob> blob = array.new<ob>()
+var array<ob> brob = array.new<ob>()
+var int dir = 0
+
+// ---------- Detection: PRICE-based pivots (the fix) ----------
+phOB = ta.pivothigh(len, len) // was: ta.pivothigh(b.v, len, len)  -> WRONG
+plOB = ta.pivotlow(len, len) // was: based on volume too
+
+atrOB = ta.atr(len)
+
+// ---------- Mitigation test ----------
+f_mitigated_bull(id) =>
+    hit = false
+    for j = 0 to len - 1 by 1
+        if obmiti == 'Close' ? math.min(close[j], open[j]) < id.btm : obmiti == 'Wick' ? low[j] < id.btm : obmiti == 'Avg' ? low[j] < id.avg : false
+            hit := true
+            break
+    hit
+
+f_mitigated_bear(id) =>
+    hit = false
+    for j = 0 to len - 1 by 1
+        if obmiti == 'Close' ? math.max(close[j], open[j]) > id.top : obmiti == 'Wick' ? high[j] > id.top : obmiti == 'Avg' ? high[j] > id.avg : false
+            hit := true
+            break
+    hit
+
+// ---------- Create a new bullish OB ----------
+if not na(phOB) and barstate.isconfirmed
+    // A swing HIGH just printed `len` bars ago -> expect a bearish/supply zone there.
+    // We follow the original semantics: pivot-high -> bearish OB, pivot-low -> bullish OB.
+    topP = obmode == 'Length' ? math.min(high[len], high[len] + atrOB[len]) : high[len]
+    btmP = high[len] - atrOB[len]
+    btmP := obmode == 'Full' ? low[len] : btmP
+    avgP = math.avg(topP, btmP)
+
+    newOB = ob.new(topP, btmP, avgP, bar_index - len, obdncs, volume[len], -1)
+    // create drawings once
+    newOB.bx := box.new(bar_index - len, topP, bar_index, btmP, border_color = na, bgcolor = obdncs)
+    newOB.midline := line.new(bar_index - len, avgP, bar_index, avgP, color = color.new(obdncs, 0), style = line.style_dashed)
+    if obshowactivity
+        newOB.bxActUp := box.new(bar_index - len, topP, bar_index, avgP, border_color = na, bgcolor = obactdn)
+        newOB.bxActDn := box.new(bar_index - len, avgP, bar_index, btmP, border_color = na, bgcolor = obactdn)
+        newOB.bxActDn
+    if showmetric
+        newOB.metlbl := label.new(bar_index + 1, avgP, str.tostring(math.round(volume[len], 3), format.volume), textcolor = color.new(obdncs, 0), style = label.style_label_left, color = #ffffff00, size = obtxt.txSz())
+        newOB.metlbl
+
+    brob.unshift(newOB)
+    bral.created := true
+    brIS.reset := false
+    brIS.reset
+
+// ---------- Create a new bearish... (bullish OB on swing low) ----------
+if not na(plOB) and barstate.isconfirmed
+    btmP = obmode == 'Length' ? math.max(low[len], low[len] - atrOB[len]) : low[len]
+    topP = low[len] + atrOB[len]
+    topP := obmode == 'Full' ? high[len] : topP
+    avgP = math.avg(topP, btmP)
+
+    newOB = ob.new(topP, btmP, avgP, bar_index - len, obupcs, volume[len], 1)
+    newOB.bx := box.new(bar_index - len, topP, bar_index, btmP, border_color = na, bgcolor = obupcs)
+    newOB.midline := line.new(bar_index - len, avgP, bar_index, avgP, color = color.new(obupcs, 0), style = line.style_dashed)
+    if obshowactivity
+        newOB.bxActUp := box.new(bar_index - len, topP, bar_index, avgP, border_color = na, bgcolor = obactup)
+        newOB.bxActDn := box.new(bar_index - len, avgP, bar_index, btmP, border_color = na, bgcolor = obactup)
+        newOB.bxActDn
+    if showmetric
+        newOB.metlbl := label.new(bar_index + 1, avgP, str.tostring(math.round(volume[len], 3), format.volume), textcolor = color.new(obupcs, 0), style = label.style_label_left, color = #ffffff00, size = obtxt.txSz())
+        newOB.metlbl
+
+    blob.unshift(newOB)
+    blal.created := true
+    blIS.reset := false
+    blIS.reset
+
+// ---------- Mitigation: remove mitigated OBs (iterate BACKWARDS to avoid skipping) ----------
+if blob.size() > 0 and barstate.isconfirmed
+    for i = blob.size() - 1 to 0 by 1
+        id = blob.get(i)
+        if f_mitigated_bull(id)
+            if not na(id.bx)
+                box.delete(id.bx)
+            if not na(id.bxActUp)
+                box.delete(id.bxActUp)
+            if not na(id.bxActDn)
+                box.delete(id.bxActDn)
+            if not na(id.midline)
+                line.delete(id.midline)
+            if not na(id.metlbl)
+                label.delete(id.metlbl)
+            blob.remove(i)
+            blal.mitigated := true
+            blal.mitigated
+
+if brob.size() > 0 and barstate.isconfirmed
+    for i = brob.size() - 1 to 0 by 1
+        id = brob.get(i)
+        if f_mitigated_bear(id)
+            if not na(id.bx)
+                box.delete(id.bx)
+            if not na(id.bxActUp)
+                box.delete(id.bxActUp)
+            if not na(id.bxActDn)
+                box.delete(id.bxActDn)
+            if not na(id.midline)
+                line.delete(id.midline)
+            if not na(id.metlbl)
+                label.delete(id.metlbl)
+            brob.remove(i)
+            bral.mitigated := true
+            bral.mitigated
+
+// ---------- Overlap removal (keep most recent) ----------
+method remove_overlap(array<ob> id) =>
+    if id.size() > 1
+        for i = id.size() - 1 to 1 by 1
+            stuff = id.get(i)
+            current = id.get(0)
+            del = false
+            if stuff.btm > current.btm and stuff.btm < current.top
+                del := true
+                del
+            else if stuff.top < current.top and stuff.btm > current.btm
+                del := true
+                del
+            else if stuff.top > current.top and stuff.btm < current.btm
+                del := true
+                del
+            else if stuff.top < current.top and stuff.top > current.btm
+                del := true
+                del
+            if del
+                if not na(stuff.bx)
+                    box.delete(stuff.bx)
+                if not na(stuff.bxActUp)
+                    box.delete(stuff.bxActUp)
+                if not na(stuff.bxActDn)
+                    box.delete(stuff.bxActDn)
+                if not na(stuff.midline)
+                    line.delete(stuff.midline)
+                if not na(stuff.metlbl)
+                    label.delete(stuff.metlbl)
+                id.remove(i)
+
+if overlap
+    blob.remove_overlap()
+    brob.remove_overlap()
+
+// ---------- Update in-place drawings on every bar (FAST, native history) ----------
+if blob.size() > 0
+    for i = 0 to math.min(oblast - 1, blob.size() - 1) by 1
+        id = blob.get(i)
+        rightX = bar_index
+        if not na(id.bx)
+            box.set_right(id.bx, rightX)
+            box.set_bgcolor(id.bx, id.css)
+        if obshowactivity and not na(id.bxActUp)
+            box.set_right(id.bxActUp, rightX)
+            box.set_right(id.bxActDn, rightX)
+        if showline and not na(id.midline)
+            line.set_x2(id.midline, rightX)
+
+if brob.size() > 0
+    for i = 0 to math.min(oblast - 1, brob.size() - 1) by 1
+        id = brob.get(i)
+        rightX = bar_index
+        if not na(id.bx)
+            box.set_right(id.bx, rightX)
+            box.set_bgcolor(id.bx, id.css)
+        if obshowactivity and not na(id.bxActUp)
+            box.set_right(id.bxActUp, rightX)
+            box.set_right(id.bxActDn, rightX)
+        if showline and not na(id.midline)
+            line.set_x2(id.midline, rightX)
+
+// ---------- "Price inside OB" detection (alerts) ----------
+if barstate.isconfirmed and blob.size() > 0
+    id = blob.get(0)
+    if low < id.top and blIS.reset == false
+        blal.inside := true
+        blIS.reset := true
+        blIS.reset
+
+if barstate.isconfirmed and brob.size() > 0
+    id = brob.get(0)
+    if high > id.btm and brIS.reset == false
+        bral.inside := true
+        brIS.reset := true
+        brIS.reset
+
+// ---------- "Show Last" enforcement ----------
+// Only the newest `oblast` OBs are actively updated/drawn (loops above are
+// bounded by `math.min(oblast - 1, ...)`). OBs pushed out of the window are
+// deleted from the arrays the next time mitigation/overlap cleanup runs.
+
+// ---------- Alerts ----------
+if blinside and blal.inside
+    alert('Price Inside Bullish OB')
+if blcreated and blal.created
+    alert('Bullish OB Formed')
+if blmitigated and blal.mitigated
+    alert('Bullish OB Mitigated')
+if brinside and bral.inside
+    alert('Price Inside Bearish OB')
+if brcreated and bral.created
+    alert('Bearish OB Formed')
+if brmitigated and bral.mitigated
+    alert('Bearish OB Mitigated')
+
+// reset transient alert flags
+blal.created := false
+blal.inside := false
+blal.mitigated := false
+bral.created := false
+bral.inside := false
+bral.mitigated := false
+
+//
+buyalert = input.bool(false, 'Buy Alert', group = 'ALERTS')
+sellalert = input.bool(false, 'Sell Alert', group = 'ALERTS')
+if buyalert and buyCond or strongBuyCond1
+    alert('Buy', alert.freq_once_per_bar_close)
+if sellalert and sellCond or strongSellCond1
+    alert('Sell', alert.freq_once_per_bar_close)
+
+
+// ########## BUY/SELL 1 min timeframe ##########
+
+
+h = input.float(12, 'Bandwidth', minval = 0)
+srcBS = input(close, 'Source')
+
+repaint = input(true, 'Smooth Signals', tooltip = 'Repainting is an effect where the indicators historical output is subject to change over time. Disabling repainting will cause the indicator to output the endpoint of the estimator')
+
+//Style
+upCss = input.color(color.rgb(4, 255, 0), 'Colors', inline = 'inline1', group = 'Style')
+dnCss = input.color(color.rgb(255, 146, 146), '', inline = 'inline1', group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+gauss(x, h) =>
+    math.exp(-(math.pow(x, 2) / (h * h * 2)))
+
+//-----------------------------------------------------------------------------}
+//Append lines
+//-----------------------------------------------------------------------------{
+nBS = bar_index
+
+var ln = array.new_line(0)
+
+if barstate.isfirst and repaint
+    for i = 0 to 499 by 1
+        array.push(ln, line.new(na, na, na, na))
+
+//-----------------------------------------------------------------------------}
+//End point method
+//-----------------------------------------------------------------------------{
+var coefs = array.new_float(0)
+var den = 0.
+
+if barstate.isfirst and not repaint
+    for i = 0 to 499 by 1
+        w = gauss(i, h)
+        coefs.push(w)
+
+    den := coefs.sum()
+    den
+
+out = 0.
+if not repaint
+    for i = 0 to 499 by 1
+        out := out + srcBS[i] * coefs.get(i)
+        out
+out := out / den
+
+//-----------------------------------------------------------------------------}
+//Compute and display NWE
+//-----------------------------------------------------------------------------{
+float y2 = na
+float y1 = na
+float y1_d = na
+line l = na
+label lb = na
+
+var bool buySignal = false
+var bool sellSignal = false
+
+if barstate.islast and repaint
+    for i = 0 to math.min(499, nBS - 1) by 1
+        sum = 0.
+        sumw = 0.
+        for j = 0 to math.min(499, nBS - 1) by 1
+            w = gauss(i - j, h)
+            sum := sum + srcBS[j] * w
+            sumw := sumw + w
+            sumw
+
+        y2 := sum / sumw
+        d = y2 - y1
+
+        l := array.get(ln, i)
+        line.set_xy1(l, nBS - i + 1, y1)
+        line.set_xy2(l, nBS - i, y2)
+        line.set_color(l, y2 > y1 ? dnCss : upCss)
+        line.set_width(l, 2)
+
+        if d * y1_d < 0
+            if y1_d < 0
+                buySignal := true
+                label.new(nBS - i + 1, srcBS[i], 'BUY', color = color(na), style = label.style_label_up, textcolor = upCss, textalign = text.align_center, size = size.huge)
+            else
+                sellSignal := true
+                label.new(nBS - i + 1, srcBS[i], 'SELL', color = color(na), style = label.style_label_down, textcolor = dnCss, textalign = text.align_center, size = size.huge)
+
+        y1 := y2
+        y1_d := d
+        y1_d
+
+alertcondition(buySignal, title = 'Buy Alert', message = 'Buy signal detected.')
+alertcondition(sellSignal, title = 'Sell Alert', message = 'Sell signal detected.')
+
+if barstate.islast
+    buySignal := false
+    sellSignal := false
+    sellSignal
+
+//-----------------------------------------------------------------------------}
+//Dashboard
+//-----------------------------------------------------------------------------{
+var tb = table.new(position.top_right, 1, 1, bgcolor = color.rgb(30, 34, 45), border_color = color.rgb(55, 58, 70), border_width = 1, frame_color = color.rgb(55, 58, 70), frame_width = 1)
+
+if repaint
+    tb.cell(0, 0, 'Smooth Signals', text_color = color.white, text_size = size.small)
+
+//-----------------------------------------------------------------------------}
+plot(repaint ? na : out, 'Colors', out > out[1] ? upCss : dnCss)
+
+
+// ==========================================================================================
+
+// === Dashboard with Telegram Link ===
+var table myTable = table.new(position.top_center, 1, 1, border_width = 1, frame_color = color.black, bgcolor = color.white)
+table.cell(myTable, 0, 0, 'श्री स्वामी समर्थ', bgcolor = color.blue, text_color = color.white, text_size = size.normal)
+
+/////indicator("DI+, DI-, ADX Table (Live + Flash + Alert)", overlay=true)
+
+adxLen = input.int(7, title="ADX Length")
+
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+
+isDiPlusHigher = diPlus > diMinus
+crossoverOccurred = ta.crossover(diPlus, diMinus) or ta.crossunder(diPlus, diMinus)
+dominantDI = isDiPlusHigher ? "DI+" : "DI-"
+
+// ADX Trend Strength Description
+adxPower = adxVal < 18 ? "Weak" :
+           adxVal < 25 ? "Starting" :
+           adxVal < 40 ? "Strong" : "Very Strong"
+
+
+
+// Table Initialization
+var table adxTable4 = table.new(position.bottom_center, 2, 3, border_width=1)
+
+// Always update table on every bar — with integer formatting
+table.cell(adxTable4, 0, 0, isDiPlusHigher ? "DI+ up" : "DI- down", text_color=color.white, bgcolor=color.black)
+table.cell(adxTable4, 1, 0,    isDiPlusHigher ? str.tostring(diPlus, "#") : str.tostring(diMinus, "#"),    text_color=isDiPlusHigher ? color.green : color.red,    bgcolor=color.black)
+
+table.cell(adxTable4, 0, 1, isDiPlusHigher ? "DI- down" : "DI+ up", text_color=color.white, bgcolor=color.black)
+table.cell(adxTable4, 1, 1,    isDiPlusHigher ? str.tostring(diMinus, "#") : str.tostring(diPlus, "#"),    text_color=isDiPlusHigher ? color.red : color.green,    bgcolor=color.black)
+
+table.cell(adxTable4, 0, 2, "ADX", text_color=color.white, bgcolor=color.black)
+table.cell(adxTable4, 1, 2, str.tostring(adxVal, "#") + " (" + adxPower + ")", text_color=color.yellow, bgcolor=color.black)
+
+
+// Alerts
+alertcondition(adxVal >= 40, title="Very Strong Trend Alert", message="ADX indicates a very strong trend!")
+
+
+/////indicator("Order Blocks with Volume [Optimized]", overlay=true, max_boxes_count=100, max_lines_count=500, max_labels_count=200)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+i_lookback     = input.int(3, "Consolidation Lookback", minval=1, group="Order Blocks")
+i_threshold    = input.float(0.5, "Breakout Threshold %", minval=0.1, group="Order Blocks") / 100
+i_maxBlocks    = input.int(20, "Maximum Order Blocks", minval=1, maxval=50, group="Order Blocks")
+i_blockLength  = input.int(5, "Order Block Length (bars)", minval=1, maxval=100, group="Order Blocks")
+i_showVolText  = input.bool(true, "Show Volume Text", group="Order Blocks")
+i_extendBlocks = input.bool(false, "Extend Blocks Until Hit", group="Order Blocks")
+
+VOL_CALC_METHOD = input.string("Simple", "Volume Calculation Method", options=["Simple", "Relative", "Weighted"], group="Volume")
+VOL_LOOKBACK    = input.int(20, "Volume Lookback Period", minval=5, maxval=100, group="Volume")
+VOL_THRESHOLD   = input.float(1.0, "Volume Threshold Multiplier", minval=1.0, maxval=5.0, step=0.1, group="Volume")
+
+BULL_COLOR = input.color(color.rgb(26, 255, 236, 43), "Bullish Color", group="Colors")
+BEAR_COLOR = input.color(color.rgb(249, 86, 255, 40), "Bearish Color", group="Colors")
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+float vol_sma = ta.sma(volume, VOL_LOOKBACK)
+
+float vol_strength = switch VOL_CALC_METHOD
+    "Simple"   => (volume + volume[1]) / 2
+    "Relative" => vol_sma > 0 ? volume / vol_sma : 0
+    "Weighted" => (volume * 2.0 + volume[1]) / 3.0
+    => volume / vol_sma
+
+float highest_high = ta.highest(high, i_lookback)
+float lowest_high  = ta.lowest(high,  i_lookback)
+float highest_low  = ta.highest(low,  i_lookback)
+float lowest_low   = ta.lowest(low,   i_lookback)
+
+float high_range    = highest_high - lowest_high
+float low_range     = highest_low  - lowest_low
+float prev_range    = high[1] - low[1]
+float threshold_val = ((high_range + low_range) * 0.5) * (1 + i_threshold)
+
+bool is_consol  = prev_range <= threshold_val
+
+bool bull_break = close > ta.highest(high, i_lookback)[1] and close > open
+bool bear_break = close < ta.lowest(low, i_lookback)[1]  and close < open
+
+bool vol_ok     = vol_strength >= VOL_THRESHOLD
+
+bool create_bull = is_consol and vol_ok and bull_break
+bool create_bear = is_consol and vol_ok and bear_break
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ORDER BLOCK TYPE
+// ═══════════════════════════════════════════════════════════════════════════════
+type OrderBlock
+    box     bx
+    float   top
+    float   bottom
+    bool    isBull
+    int     startBar
+    int     rightBar
+    float   volStrength
+
+var array<OrderBlock> blocks = array.new<OrderBlock>()
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VOLUME FORMAT
+// ═══════════════════════════════════════════════════════════════════════════════
+format_volume(float vol) =>
+    string result = ""
+    if vol >= 1000000
+        result := str.tostring(vol / 1000000, "#.##") + "M"
+    else if vol >= 1000
+        result := str.tostring(vol / 1000, "#.##") + "K"
+    else
+        result := str.tostring(vol, "#.##")
+    result
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VOLUME LABEL TEXT BUILD
+// ═══════════════════════════════════════════════════════════════════════════════
+build_vol_text(bool isBull, float vol) =>
+    string volType = isBull ? "Up Vol" : "Down Vol"
+    string volVal  = format_volume(vol)
+    string result  = volType + "\n" + volVal
+    result
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREATE BLOCK
+// ═══════════════════════════════════════════════════════════════════════════════
+create_block(bool isBull, float strength) =>
+    color mainColor = isBull ? BULL_COLOR : BEAR_COLOR
+    int   alpha     = math.round(100 - math.min(strength * 15, 35))
+    color boxColor  = color.new(mainColor, alpha)
+
+    string txt = i_showVolText ? build_vol_text(isBull, volume) : ""
+
+    int rightBar = i_extendBlocks ? bar_index + 500 : bar_index + i_blockLength
+
+    box newBox = box.new(
+         left         = bar_index - 1,
+         right        = rightBar,
+         top          = high[1],
+         bottom       = low[1],
+         border_color = mainColor,
+         bgcolor      = boxColor,
+         border_width = 1,
+         text         = txt,
+         text_color   = color.white,
+         text_size    = size.small,
+         text_halign  = text.align_center,
+         text_valign  = text.align_center)
+
+    OrderBlock ob = OrderBlock.new(newBox, high[1], low[1], isBull, bar_index, rightBar, strength)
+    array.push(blocks, ob)
+
+if create_bull
+    create_block(true, vol_strength)
+
+if create_bear
+    create_block(false, vol_strength)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLEANUP + EXTENSION
+// ═══════════════════════════════════════════════════════════════════════════════
+if array.size(blocks) > 0
+    int sz = array.size(blocks)
+    for i = sz - 1 to 0
+        OrderBlock ob = array.get(blocks, i)
+        bool isHit   = ob.isBull ? (low <= ob.bottom) : (high >= ob.top)
+        bool tooMany = i < (sz - i_maxBlocks)
+
+        if isHit or tooMany
+            box.delete(ob.bx)
+            array.remove(blocks, i)
+        else
+            // ✅ हा कोड 'else' च्या आत आहे, त्यामुळे एरर येणार नाही.
+            // जर i_extendBlocks 'true' असेल तरच बॉक्स पुढे जाईल, नाहीतर तो तसाच राहील.
+            if i_extendBlocks
+                box.set_right(ob.bx, bar_index + 5)
+                ob.rightBar := bar_index + 5
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+alertcondition(create_bull, "Bullish OB", "Bullish Order Block formed")
+alertcondition(create_bear, "Bearish OB", "Bearish Order Block formed")
+
+/////indicator('buysellsignal-yashgode9', 'buysellsignal-yashgode9', overlay=true, format=format.price, max_labels_count=200, max_lines_count=50, max_boxes_count=500)
+//@author = yashgode9 [YASH NANDKUMAR GODE]
+import yashgode9/signalLib_yashgode9/2 as signalLib
+
+//===================== Input Configuration =====================//
+DEPTH_ENGINE      = input.int(30, 'DEPTH_ENGINE',     minval=1, step=1, group='signalLib Config')
+DEVIATION_ENGINE  = input.int(5,  'DEVIATION_ENGINE', minval=1, step=1, group='signalLib Config')
+BACKSTEP_ENGINE   = input.int(5,  'BACKSTEP_ENGINE',  minval=2, step=1, group='signalLib Config')
+
+labels_transparency  = input.int(50, 'Labels Transparency', minval=0, maxval=100, group='Labels')
+buycolor             = input.color(#03ff85, 'Buy Color', group='Colors')
+sellcolor            = input.color(color.rgb(252, 8, 8, 18), 'Sell Color', group='Colors')
+bg_buy_color         = input.color(color.rgb(0, 255, 100, 85), 'Background Buy Color (Green)', group='Background')
+bg_sell_color        = input.color(color.rgb(255, 0, 0, 85), 'Background Sell Color (Red)', group='Background')
+show_bg              = input.bool(true, 'Show Background', group='Background')
+
+labelsize_input = input.int(2, 'Label Size', minval=1, maxval=5, group='Labels')
+labelsize = switch labelsize_input
+    1 => size.tiny
+    2 => size.small
+    3 => size.normal
+    4 => size.large
+    5 => size.huge
+
+//===================== Constants =====================//
+int BUY_DIR  = -1
+int SELL_DIR = 1
+BLACK = color.rgb(8, 8, 8)
+
+buy_label_color  = color.new(buycolor, labels_transparency)
+sell_label_color = color.new(sellcolor, labels_transparency)
+label_text_color = color.new(BLACK, labels_transparency)
+
+// Full height cover करण्यासाठी extreme values
+float CHART_TOP    = 999999999.0
+float CHART_BOTTOM = 0.0
+
+//===================== Main Logic =====================//
+[direction, zee1, zee2] = signalLib.signalLib(low, high, DEPTH_ENGINE, DEVIATION_ENGINE, BACKSTEP_ENGINE)
+
+direction_changed = ta.change(direction) != 0
+
+var label current_label = na
+
+zee2_time  = zee2.time
+zee2_price = zee2.price
+
+zee2_time_changed  = ta.change(zee2_time)  != 0
+zee2_price_changed = ta.change(zee2_price) != 0
+zee2_changed       = zee2_time_changed or zee2_price_changed
+
+//===================== Box Variables =====================//
+var box current_box  = na    // सध्याचा active (open-ended) box
+var box previous_box = na    // मागचा finalized box (direction change वेळी right set करण्यासाठी)
+
+//===================== Helper Function =====================//
+make_box(int left_t, color clr) =>
+    box.new(
+         left         = left_t,
+         top          = CHART_TOP,
+         right        = time + (time - time[1]),
+         bottom       = CHART_BOTTOM,
+         xloc         = xloc.bar_time,
+         border_color = color.new(color.white, 100),
+         bgcolor      = clr,
+         extend       = extend.none)
+
+//===================== Label & Box Management =====================//
+if zee2_changed and show_bg
+    is_buy   = direction == BUY_DIR
+    lbl_clr  = is_buy ? buy_label_color  : sell_label_color
+    lbl_styl = is_buy ? label.style_label_up : label.style_label_down
+    lbl_text = is_buy ? 'Buy-point' : 'Sell-point'
+    box_clr  = is_buy ? bg_buy_color : bg_sell_color
+
+    if direction != direction[1]
+        //=== DIRECTION CHANGE (Reversal Confirmed) ===//
+
+        // 1) मागचा label delete (same direction चा residual असेल तर)
+        // Direction change म्हणजे नवीन label — मागचा ठेवायचा
+
+        // 2) मागचा active box finalize करा — right edge = या नवीन signal चा time
+        if not na(current_box)
+            box.set_right(current_box, zee2_time)
+            previous_box := current_box
+
+        // 3) नवीन box सुरू करा
+        current_box := make_box(zee2_time, box_clr)
+
+    else
+        //=== SAME DIRECTION (Signal Shift / Repaint) ===//
+
+        // 1) मागचा label delete करा
+        if not na(current_label)
+            label.delete(current_label)
+
+        // 2) मागचा active box delete करा
+        if not na(current_box)
+            box.delete(current_box)
+
+        // 3) मागच्या finalized box चा right edge = नवीन shifted position
+        if not na(previous_box)
+            box.set_right(previous_box, zee2_time)
+
+        // 4) नवीन box बनवा shifted position पासून
+        current_box := make_box(zee2_time, box_clr)
+
+    // Label बनवा
+    current_label := label.new(
+         x         = zee2_time,
+         y         = zee2_price,
+         text      = lbl_text,
+         xloc      = xloc.bar_time,
+         yloc      = yloc.price,
+         color     = lbl_clr,
+         style     = lbl_styl,
+         textcolor = label_text_color,
+         size      = labelsize)
+
+else if not zee2_changed and show_bg
+    // Labels without box change — original label logic
+    // (no action needed here)
+    noop = 0
+
+// Label-only logic (when background is off)
+if zee2_changed and not show_bg
+    is_buy   = direction == BUY_DIR
+    lbl_clr  = is_buy ? buy_label_color  : sell_label_color
+    lbl_styl = is_buy ? label.style_label_up : label.style_label_down
+    lbl_text = is_buy ? 'Buy-point' : 'Sell-point'
+
+    if direction == direction[1] and not na(current_label)
+        label.delete(current_label)
+
+    current_label := label.new(
+         x         = zee2_time,
+         y         = zee2_price,
+         text      = lbl_text,
+         xloc      = xloc.bar_time,
+         yloc      = yloc.price,
+         color     = lbl_clr,
+         style     = lbl_styl,
+         textcolor = label_text_color,
+         size      = labelsize)
+
+//===================== Extend Current Box Every Bar =====================//
+if not na(current_box) and show_bg
+    box.set_right(current_box, time + (time - time[1]))
+
+//===================== Alert System =====================//
+if direction_changed
+    if direction == SELL_DIR
+        alert("Sell signal generated!!!", alert.freq_once_per_bar_close)
+    else
+        alert("Buy signal generated!!!", alert.freq_once_per_bar_close)
+
+
+/////indicator("🔹Premium/Discount Zones - SMC Style (Final)", overlay=true)
+
+// === User Inputs ===
+lookback1 = input.int(100, title="Lookback Period (Bars)", minval=5)
+showZones = input.bool(true, title="Show Premium/Discount Zones")
+showLabels1 = input.bool(true, title="Show Labels at Last Bar Only")
+
+// === Range Calculation ===
+rangeHigh = ta.highest(high, lookback1)
+rangeLow  = ta.lowest(low, lookback1)
+eqLevel   = (rangeHigh + rangeLow) / 2
+discount  = rangeLow
+premium   = rangeHigh
+
+
+
+// === Plot Labels only at the LAST bar ===color.green, 90
+var label premiumLabel = na
+var label eqLabel = na
+var label discountLabel = na
+
+if (bar_index == ta.highest(bar_index, lookback1))
+    label.delete(premiumLabel)
+    label.delete(eqLabel)
+    label.delete(discountLabel)
+
+    premiumLabel := label.new(x=bar_index, y=premium, text="Premium", style=label.style_label_left, color=color.rgb(255, 82, 82, 48), textcolor=color.white)
+    eqLabel := label.new(x=bar_index, y=eqLevel, text="Equilibrium", style=label.style_label_left, color=color.rgb(120, 123, 134, 53), textcolor=color.white)
+    discountLabel := label.new(x=bar_index, y=discount, text="Discount", style=label.style_label_left, color=color.rgb(76, 175, 79, 56), textcolor=color.white)
+
+
+/////indicator('MTF FVG – Professional Edition', shorttitle = 'MTF FVG Pro', overlay = true, max_bars_back = 5000, max_boxes_count = 500)
+
+// ════════════════════════════════════════════════════════════════════════
+// ~~ INPUTS
+// ════════════════════════════════════════════════════════════════════════
+
+tf = input.timeframe('', title = 'FVG Timeframe', group = '⚙️ Core Settings', inline = 'tf', tooltip = 'FVG calculate करण्यासाठी timeframe select करा.\nBlank = current chart timeframe.')
+BodySens = input.float(0.01, title = 'Sensitivity', step = 0.1, minval = 0, group = '⚙️ Core Settings', inline = 'tf', tooltip = 'Candle body size filter.\nकमी = जास्त FVGs | जास्त = फक्त strong FVGs.')
+
+mit = input.bool(true, 'Mitigate on Midpoint', group = '🎯 Mitigation', tooltip = 'true  → midpoint touch = FVG mitigated\nfalse → full gap fill required')
+bodyClose = input.bool(false, 'Require Body Close for Mitigation', group = '🎯 Mitigation', tooltip = 'true  → candle body ने cross करावे लागेल (accurate)\nfalse → wick touch पुरेसे (original)')
+keepHistory = input.bool(false, 'Keep Mitigated FVGs (faded)', group = '🎯 Mitigation', tooltip = 'true  → Mitigated FVGs fade होतात, chart वर दिसतात\nfalse → Delete होतात')
+
+extendLength = input.int(20, 'Extend Boxes (bars)', minval = 1, group = '🎨 Style')
+UpCol = input.color(color.new(#ffffff, 1), title = 'Bull FVG', group = '🎨 Style', inline = 'col')
+DnCol = input.color(color.new(#2a4aff, 0), title = 'Bear FVG', group = '🎨 Style', inline = 'col')
+Col = input.color(color.new(color.gray, 85), title = 'Base', group = '🎨 Style', inline = 'col')
+MitCol = input.color(color.new(color.gray, 92), title = 'Mitigated', group = '🎨 Style', inline = 'col')
+
+showScore = input.bool(true, 'Show Confluence Score (%)', group = '🏷️ Labels', tooltip = 'FVG label वर strength score दाखवतो.\nScore = Gap Size + Volume Imbalance.')
+showAge = input.bool(true, 'Show FVG Age (bars)', group = '🏷️ Labels', tooltip = 'Label वर gap किती bars जुना आहे ते दाखवतो.')
+showFill = input.bool(true, 'Show Gap Fill %', group = '🏷️ Labels', tooltip = 'Price ने gap किती % fill केला ते live दाखवतो.')
+
+
+
+// ════════════════════════════════════════════════════════════════════════
+// ~~ TYPES
+// ════════════════════════════════════════════════════════════════════════
+
+type FVGData
+	array<box> fvg
+	array<box> bvBox
+	array<box> svBox
+	array<line> midLine
+	array<label> lbl
+	array<int> birthBar
+	array<float> gapTop
+	array<float> gapBot
+	array<bool> mitigated
+	array<label> scoreLbl // confluence score label (inside box)
+
+var bullData = FVGData.new(array.new<box>(), array.new<box>(), array.new<box>(), array.new<line>(), array.new<label>(), array.new<int>(), array.new<float>(), array.new<float>(), array.new<bool>(), array.new<label>())
+
+var bearData = FVGData.new(array.new<box>(), array.new<box>(), array.new<box>(), array.new<line>(), array.new<label>(), array.new<int>(), array.new<float>(), array.new<float>(), array.new<bool>(), array.new<label>())
+
+var save = array.new<float>(0)
+
+// ── FIX-A: Counters stored in single-element arrays so functions can modify them ──
+var array<int> _totalBull = array.from(0)
+var array<int> _totalBear = array.from(0)
+var array<int> _filledBull = array.from(0)
+var array<int> _filledBear = array.from(0)
+
+// ════════════════════════════════════════════════════════════════════════
+// ~~ HELPER FUNCTIONS
+// ════════════════════════════════════════════════════════════════════════
+
+getMTF() =>
+    [close, high, low, high[2], low[2], volume]
+
+getCandle() =>
+    wick = math.max(close, open) - math.min(close, open)
+    array.push(save, wick)
+    [wick, array.avg(save)]
+
+getBarTime(t, barsOffset) =>
+    t + barsOffset * timeframe.in_seconds(timeframe.period) * 1000
+
+BarsBack(val, hl) =>
+    back = time
+    for i = 0 to 4999 by 1
+        if val == hl[i]
+            back := time[i]
+            break
+    back
+
+// Doji-safe volume power
+VolumePower(v, c, l, h, ca) =>
+    r = h - l
+    r == 0 ? 50 : ca ? math.round(math.round(v * (c - l) / r) / v * 100) : math.round(math.round(v * (h - c) / r) / v * 100)
+
+// Confluence Score: gap size ratio + volume imbalance
+getFVGScore(gapSize, avgWick, buyVol, sellVol) =>
+    sizeScore = math.min(gapSize / math.max(avgWick, 0.0001) * 50, 50)
+    volScore = math.min(math.abs(buyVol - sellVol) / 2, 50)
+    int(sizeScore + volScore)
+
+// Score → grade label + color
+getScoreGrade(score) =>
+    grade = score >= 75 ? 'STRONG' : score >= 50 ? 'MODERATE' : 'WEAK'
+    grade
+
+getScoreColor(score) =>
+    score >= 75 ? color.new(#00ffbb, 0) : score >= 50 ? color.new(#f5a623, 0) : color.new(#ff1100, 0)
+
+// Gap fill percentage
+getGapFill(top, bot, isBull) =>
+    gapSize = top - bot
+    result = 0
+    if gapSize <= 0
+        result := 100
+        result
+    else if isBull
+        filled = math.max(0.0, top - math.max(low, bot))
+        result := math.min(int(math.round(filled / gapSize * 100)), 100)
+        result
+    else
+        filled = math.max(0.0, math.min(high, top) - bot)
+        result := math.min(int(math.round(filled / gapSize * 100)), 100)
+        result
+    result
+
+// Build label text
+buildLabel(dir, score, age, fillPct) =>
+    txt = dir
+    if showScore
+        txt := txt + '\n⚡' + str.tostring(score) + '%'
+        txt
+    if showAge
+        txt := txt + '\n🕐' + str.tostring(age) + 'b'
+        txt
+    if showFill
+        txt := txt + '\n📊' + str.tostring(fillPct) + '% fill'
+        txt
+    txt
+
+// ════════════════════════════════════════════════════════════════════════
+// ~~ MITIGATION — FIX-B: Split into two separate methods (Bull / Bear)
+//    FIX-C: No mixed void/bool return — all branches are void (no bare bool)
+// ════════════════════════════════════════════════════════════════════════
+
+method BullCleaner(FVGData d) =>
+    if d.fvg.size() > 0
+        for i = d.fvg.size() - 1 to 0 by 1
+            // skip already mitigated
+            if d.mitigated.get(i)
+                continue
+
+            top = d.gapTop.get(i)
+            bot = d.gapBot.get(i)
+            midP = math.avg(top, bot)
+
+            // FIX-C: compute bool first, then use it — no if/else returning bool inside assignment
+            condBodyClose = mit ? close < midP : close <= bot
+            condWick = mit ? low < midP : low <= bot
+            mitigateNow = bodyClose ? condBodyClose : condWick
+
+            if mitigateNow
+                d.mitigated.set(i, true)
+                // FIX-A: increment via array
+                array.set(_filledBull, 0, array.get(_filledBull, 0) + 1)
+
+                // FIX: separate if blocks (not if/else) — avoids void vs bool mismatch
+                if keepHistory
+                    d.fvg.get(i).set_bgcolor(MitCol)
+                    d.fvg.get(i).set_border_color(MitCol)
+                    d.bvBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.bvBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.svBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.svBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.midLine.get(i).set_color(color.new(color.gray, 70))
+                    // Score label: fade text color on mitigation
+                    d.scoreLbl.get(i).set_textcolor(color.new(color.gray, 50))
+                    d.scoreLbl.get(i).set_text('✓ MIT')
+                if not keepHistory
+                    d.fvg.get(i).delete()
+                    d.midLine.get(i).delete()
+                    d.bvBox.get(i).delete()
+                    d.svBox.get(i).delete()
+                    d.lbl.get(i).delete()
+                    d.scoreLbl.get(i).delete()
+                    d.fvg.remove(i)
+                    d.midLine.remove(i)
+                    d.bvBox.remove(i)
+                    d.svBox.remove(i)
+                    d.lbl.remove(i)
+                    d.scoreLbl.remove(i)
+                    d.birthBar.remove(i)
+                    d.gapTop.remove(i)
+                    d.gapBot.remove(i)
+                    d.mitigated.remove(i)
+
+method BearCleaner(FVGData d) =>
+    if d.fvg.size() > 0
+        for i = d.fvg.size() - 1 to 0 by 1
+            if d.mitigated.get(i)
+                continue
+
+            top = d.gapTop.get(i)
+            bot = d.gapBot.get(i)
+            midP = math.avg(top, bot)
+
+            condBodyClose = mit ? close > midP : close >= top
+            condWick = mit ? high > midP : high >= top
+            mitigateNow = bodyClose ? condBodyClose : condWick
+
+            if mitigateNow
+                d.mitigated.set(i, true)
+                array.set(_filledBear, 0, array.get(_filledBear, 0) + 1)
+
+                if keepHistory
+                    d.fvg.get(i).set_bgcolor(MitCol)
+                    d.fvg.get(i).set_border_color(MitCol)
+                    d.bvBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.bvBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.svBox.get(i).set_bgcolor(color.new(color.gray, 95))
+                    d.svBox.get(i).set_border_color(color.new(color.gray, 95))
+                    d.midLine.get(i).set_color(color.new(color.gray, 70))
+                    // Score label: fade text color on mitigation
+                    d.scoreLbl.get(i).set_textcolor(color.new(color.gray, 50))
+                    d.scoreLbl.get(i).set_text('✓ MIT')
+                if not keepHistory
+                    d.fvg.get(i).delete()
+                    d.midLine.get(i).delete()
+                    d.bvBox.get(i).delete()
+                    d.svBox.get(i).delete()
+                    d.lbl.get(i).delete()
+                    d.scoreLbl.get(i).delete()
+                    d.fvg.remove(i)
+                    d.midLine.remove(i)
+                    d.bvBox.remove(i)
+                    d.svBox.remove(i)
+                    d.lbl.remove(i)
+                    d.scoreLbl.remove(i)
+                    d.birthBar.remove(i)
+                    d.gapTop.remove(i)
+                    d.gapBot.remove(i)
+                    d.mitigated.remove(i)
+
+// ════════════════════════════════════════════════════════════════════════
+// ~~ LIVE LABEL UPDATER
+// ════════════════════════════════════════════════════════════════════════
+
+method UpdateLabels(FVGData d, isBull) =>
+    if d.fvg.size() > 0
+        for i = 0 to d.fvg.size() - 1 by 1
+            if d.mitigated.get(i)
+                continue
+            top = d.gapTop.get(i)
+            bot = d.gapBot.get(i)
+            birth = d.birthBar.get(i)
+            age = bar_index - birth
+            fillPct = getGapFill(top, bot, isBull)
+            dir = isBull ? '▲ FVG' : '▼ FVG'
+            score = getFVGScore(top - bot, math.max(top - bot, 0.0001), 60, 40)
+            txt = buildLabel(dir, score, age, fillPct)
+            d.lbl.get(i).set_text(txt)
+
+// ════════════════════════════════════════════════════════════════════════
+// ~~ MAIN FVG DETECTION
+// ════════════════════════════════════════════════════════════════════════
+
+FVG(l, l2, h, h2, c1, LBack, L2Back, HBack, H2Back, wick, avgFVG, buyVol, sellVol) =>
+
+    bullGapSize = l - h2
+    bearGapSize = l2 - h
+
+    BullFVG = l > h2 and c1 > h2
+    BearFVG = h < l2 and c1 < l2
+
+    // ── Bull FVG ──────────────────────────────────────────────────────
+    if BullFVG and not BullFVG[1] and wick >= avgFVG * BodySens
+        array.set(_totalBull, 0, array.get(_totalBull, 0) + 1)
+
+        future = getBarTime(HBack, extendLength)
+        midVal = math.avg(l, h2)
+        dist = future - H2Back
+        score = getFVGScore(bullGapSize, avgFVG, buyVol, sellVol)
+        txt = buildLabel('▲ FVG', score, 0, 0)
+
+        b = box.new(H2Back, l, future, h2, bgcolor = Col, border_color = Col, extend = extend.none, xloc = xloc.bar_time)
+        m = line.new(H2Back, midVal, future, midVal, xloc = xloc.bar_time, color = color.white, style = line.style_dashed, width = 1)
+        bb = box.new(H2Back, midVal, int(H2Back + dist * (buyVol / 100)), l, bgcolor = UpCol, border_color = UpCol, extend = extend.none, xloc = xloc.bar_time)
+        sb = box.new(H2Back, h2, int(H2Back + dist * (sellVol / 100)), midVal, bgcolor = DnCol, border_color = DnCol, extend = extend.none, xloc = xloc.bar_time)
+        lb = label.new(future, midVal, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = color.new(#00ffbb, 0), size = size.normal)
+
+        // ── Confluence Score Label (inside box, centered) ──
+        scoreTxt = str.tostring(score) + '%\n' + getScoreGrade(score)
+        scoreColor = getScoreColor(score)
+        scoreX = int(H2Back + (future - H2Back) / 2)
+        slb = label.new(scoreX, midVal, scoreTxt, xloc = xloc.bar_time, style = label.style_label_center, color = color.new(color.black, 75), textcolor = scoreColor, size = size.small)
+
+        bullData.fvg.unshift(b)
+        bullData.midLine.unshift(m)
+        bullData.bvBox.unshift(bb)
+        bullData.svBox.unshift(sb)
+        bullData.lbl.unshift(lb)
+        bullData.birthBar.unshift(bar_index)
+        bullData.gapTop.unshift(l)
+        bullData.gapBot.unshift(h2)
+        bullData.mitigated.unshift(false)
+        bullData.scoreLbl.unshift(slb)
+
+        alert('🟢 Bull FVG Formed | ' + syminfo.ticker + ' | Score: ' + str.tostring(score) + '%', alert.freq_once_per_bar)
+
+    // ── Bear FVG ──────────────────────────────────────────────────────
+    if BearFVG and not BearFVG[1] and wick >= avgFVG * BodySens
+        array.set(_totalBear, 0, array.get(_totalBear, 0) + 1)
+
+        future = getBarTime(LBack, extendLength)
+        midVal = math.avg(l2, h)
+        dist = future - L2Back
+        score = getFVGScore(bearGapSize, avgFVG, buyVol, sellVol)
+        txt = buildLabel('▼ FVG', score, 0, 0)
+
+        b = box.new(L2Back, l2, future, h, bgcolor = Col, border_color = Col, extend = extend.none, xloc = xloc.bar_time)
+        m = line.new(L2Back, midVal, future, midVal, xloc = xloc.bar_time, color = color.white, style = line.style_dashed, width = 1)
+        bb = box.new(L2Back, midVal, int(L2Back + dist * (buyVol / 100)), l2, bgcolor = UpCol, border_color = UpCol, extend = extend.none, xloc = xloc.bar_time)
+        sb = box.new(L2Back, h, int(L2Back + dist * (sellVol / 100)), midVal, bgcolor = DnCol, border_color = DnCol, extend = extend.none, xloc = xloc.bar_time)
+        lb = label.new(future, midVal, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = color.new(#ff1100, 0), size = size.normal)
+
+        // ── Confluence Score Label (inside box, centered) ──
+        scoreTxt = str.tostring(score) + '%\n' + getScoreGrade(score)
+        scoreColor = getScoreColor(score)
+        scoreX = int(L2Back + (future - L2Back) / 2)
+        slb = label.new(scoreX, midVal, scoreTxt, xloc = xloc.bar_time, style = label.style_label_center, color = color.new(color.black, 75), textcolor = scoreColor, size = size.small)
+
+        bearData.fvg.unshift(b)
+        bearData.midLine.unshift(m)
+        bearData.bvBox.unshift(bb)
+        bearData.svBox.unshift(sb)
+        bearData.lbl.unshift(lb)
+        bearData.birthBar.unshift(bar_index)
+        bearData.gapTop.unshift(l2)
+        bearData.gapBot.unshift(h)
+        bearData.mitigated.unshift(false)
+        bearData.scoreLbl.unshift(slb)
+
+        alert('🔴 Bear FVG Formed | ' + syminfo.ticker + ' | Score: ' + str.tostring(score) + '%', alert.freq_once_per_bar)
+
+// ════════════════════════════════════════════════════════════════════════
+// ~~ DATA REQUESTS
+// ════════════════════════════════════════════════════════════════════════
+
+[c1, h1, l4, h2, l2a, v] = request.security(syminfo.tickerid, tf, getMTF(), lookahead = barmerge.lookahead_on)
+[wick, avgFVG] = request.security(syminfo.tickerid, tf, getCandle(), lookahead = barmerge.lookahead_on)
+
+HBack = BarsBack(h1, high)
+LBack = BarsBack(l4, low)
+H2Back = BarsBack(h2, high)
+L2Back = BarsBack(l2a, low)
+
+buyVol = VolumePower(v, c1, l4, h1, true)
+sellVol = VolumePower(v, c1, l4, h1, false)
+
+// ════════════════════════════════════════════════════════════════════════
+// ~~ EXECUTE
+// ════════════════════════════════════════════════════════════════════════
+
+FVG(l4, l2a, h1, h2, c1, LBack, L2Back, HBack, H2Back, wick, avgFVG, buyVol, sellVol)
+bullData.BullCleaner()
+bearData.BearCleaner()
+bullData.UpdateLabels(true)
+bearData.UpdateLabels(false)
+
+// Price-entering-gap alerts
+// FIX: Pine Script 'and' does NOT short-circuit — array.get(0) crashes when size==0
+// Use ternary so get(0) is only called when array is non-empty
+priceInBullGap = bullData.fvg.size() > 0 ? not bullData.mitigated.get(0) and low <= bullData.gapTop.get(0) and high >= bullData.gapBot.get(0) : false
+
+priceInBearGap = bearData.fvg.size() > 0 ? not bearData.mitigated.get(0) and high >= bearData.gapBot.get(0) and low <= bearData.gapTop.get(0) : false
+
+if priceInBullGap
+    alert('⚡ Price entering Bull FVG | ' + syminfo.ticker, alert.freq_once_per_bar_close)
+if priceInBearGap
+    alert('⚡ Price entering Bear FVG | ' + syminfo.ticker, alert.freq_once_per_bar_close)
+
+
