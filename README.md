@@ -1,2 +1,2 @@
 # Trading-EA
-kdlk
+# trading ea developments
